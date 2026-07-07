@@ -1,0 +1,19 @@
+{
+  "name": "ayaubot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev",
+    "lint": "node --check api/telegram.js && node --check scripts/set-webhook.js",
+    "set-webhook": "node scripts/set-webhook.js"
+  },
+  "dependencies": {
+    "@upstash/redis": "^1.35.3",
+    "satori": "^0.12.2",
+    "sharp": "^0.33.5"
+  },
+  "devDependencies": {
+    "vercel": "^37.14.0"
+  }
+}
