@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vercel dev",
-    "lint": "node --check api/telegram.js && node --check scripts/set-webhook.js",
+    "lint": "node --check api/telegram.js && node --check src/render/quote.js && node --check src/render/theme.js && node --check scripts/set-webhook.js",
     "set-webhook": "node scripts/set-webhook.js"
   },
   "dependencies": {
