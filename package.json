@@ -5,11 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vercel dev",
-    "lint": "node --check api/telegram.js && node --check src/render/quote.js && node --check src/render/theme.js && node --check scripts/set-webhook.js",
+    "start": "node src/server/index.js",
+    "lint": "node --check api/telegram.js && node --check src/bot/app.js && node --check src/analytics/service.js && node --check src/analytics/tokenize.js && node --check src/db/postgres.js && node --check src/server/index.js && node --check src/render/quote.js && node --check src/render/theme.js && node --check scripts/set-webhook.js",
     "set-webhook": "node scripts/set-webhook.js"
   },
   "dependencies": {
     "@upstash/redis": "^1.35.3",
+    "pg": "^8.22.0",
     "satori": "^0.12.2",
     "sharp": "^0.33.5"
   },

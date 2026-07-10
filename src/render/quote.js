@@ -81,46 +81,124 @@ const plainSegments = (text = '') =>
     code: false
   }));
 
-const segmentWidth = (segment) => {
-  if (segment.text === '\t') return 4;
-  if (segment.emoji) return 2;
-  return 1;
+const charWidthFactor = (char) => {
+  if (/\s/u.test(char)) return 0.34;
+  if (/[ilI.,:;!'|]/u.test(char)) return 0.31;
+  if (/[mwMW@#%&]/u.test(char)) return 0.74;
+  if (/[A-ZА-ЯЁ]/u.test(char)) return 0.76;
+  if (/[а-яё]/u.test(char)) return 0.7;
+  if (/[a-z0-9]/u.test(char)) return 0.5;
+  return 0.58;
 };
 
-const wrapSegments = (segments, maxChars = theme.text.wrapChars) => {
+const segmentWidth = (segment, fontSize = theme.text.bodySize) => {
+  if (segment.text === '\t') return fontSize * 1.36;
+  if (segment.emoji) return fontSize * 1.08;
+  return Array.from(segment.text).reduce((total, char) => total + fontSize * charWidthFactor(char), 0) * (segment.bold ? 1.04 : 1);
+};
+
+const linePixelWidth = (line, fontSize = theme.text.bodySize) =>
+  line.reduce((total, segment) => total + segmentWidth(segment, fontSize), 0);
+
+const trimLeadingSpaces = (line) => {
+  while (line.length && /\s/u.test(line[0].text)) line.shift();
+  return line;
+};
+
+const trimTrailingSpaces = (line) => {
+  while (line.length && /\s/u.test(line.at(-1).text)) line.pop();
+  return line;
+};
+
+const wrapSegmentsByWidth = (segments, maxWidth, fontSize = theme.text.bodySize) => {
   const lines = [];
   let line = [];
-  let count = 0;
-  const lineWidth = (items) => items.reduce((total, item) => total + segmentWidth(item), 0);
+  let width = 0;
 
   for (const segment of segments) {
-    const width = segmentWidth(segment);
     if (segment.text === '\n') {
-      lines.push(line);
+      lines.push(trimTrailingSpaces(line));
       line = [];
-      count = 0;
+      width = 0;
       continue;
     }
 
-    if (count + width > maxChars && line.length) {
+    const segmentPixelWidth = segmentWidth(segment, fontSize);
+    if (width + segmentPixelWidth > maxWidth && line.length) {
       const breakIndex = line.map((item) => /\s/u.test(item.text)).lastIndexOf(true);
       if (breakIndex > 0) {
-        lines.push(line.slice(0, breakIndex));
-        line = line.slice(breakIndex + 1);
-        count = lineWidth(line);
+        lines.push(trimTrailingSpaces(line.slice(0, breakIndex)));
+        line = trimLeadingSpaces(line.slice(breakIndex + 1));
+        width = linePixelWidth(line, fontSize);
       } else {
         lines.push(line);
         line = [];
-        count = 0;
+        width = 0;
       }
     }
 
     line.push(segment);
-    count += width;
+    width += segmentPixelWidth;
   }
 
-  if (line.length) lines.push(line);
+  if (line.length) lines.push(trimTrailingSpaces(line));
   return lines.length ? lines : [[]];
+};
+
+const contentWidthCandidates = (segments, fontSize) => {
+  const paragraphs = segments
+    .reduce((items, segment) => {
+      if (segment.text === '\n') items.push([]);
+      else items.at(-1).push(segment);
+      return items;
+    }, [[]]);
+  const paragraphWidths = paragraphs.map((paragraph) => linePixelWidth(paragraph, fontSize));
+  const rawWidth = Math.max(...paragraphWidths, 0);
+  const hasLongToken = paragraphs.some((paragraph, index) =>
+    paragraphWidths[index] > theme.text.maxContentWidth && !paragraph.some((segment) => /\s/u.test(segment.text))
+  );
+  if (hasLongToken) return [theme.text.maxContentWidth];
+
+  const maxWidth = Math.min(theme.text.maxContentWidth, Math.max(theme.text.minContentWidth, Math.ceil(rawWidth)));
+  const minWidth = Math.min(maxWidth, Math.max(theme.text.minContentWidth, Math.ceil(maxWidth * 0.54)));
+  const widths = [];
+  for (let width = minWidth; width <= maxWidth; width += theme.text.widthStep) widths.push(width);
+  if (!widths.includes(maxWidth)) widths.push(maxWidth);
+  return widths;
+};
+
+const lineLayoutScore = (lines, width, fontSize) => {
+  const widths = lines.map((line) => linePixelWidth(line, fontSize));
+  const fullest = Math.max(...widths, 0);
+  const emptyRight = widths.reduce((total, lineWidth) => total + Math.max(0, width - lineWidth), 0) / Math.max(1, lines.length);
+  const raggedness = widths.reduce((total, lineWidth) => total + Math.abs(fullest - lineWidth), 0) / Math.max(1, lines.length);
+  const lastLineWaste = Math.max(0, width - (widths.at(-1) || 0));
+  const overflow = widths.some((lineWidth) => lineWidth > width + 0.5) ? 10000 : 0;
+  return overflow + emptyRight * 0.9 + raggedness * 0.2 + lastLineWaste * 0.45 + lines.length * fontSize * 0.2 + width * 0.05;
+};
+
+const chooseTextLayout = (segments) => {
+  const fontSizes = theme.text.fontSizes || [theme.text.bodySize];
+  let best = null;
+
+  for (const fontSize of fontSizes) {
+    const lineHeight = Math.ceil(fontSize * 1.2);
+    for (const width of contentWidthCandidates(segments, fontSize)) {
+      const lines = wrapSegmentsByWidth(segments, width, fontSize);
+      const textWidth = Math.ceil(Math.max(...lines.map((line) => linePixelWidth(line, fontSize)), 0));
+      const score = lineLayoutScore(lines, width, fontSize);
+      const contentWidth = Math.min(theme.text.maxContentWidth, Math.max(theme.text.minContentWidth, textWidth + theme.text.widthSafety));
+      if (!best || score < best.score) best = { lines, fontSize, lineHeight, width: textWidth, contentWidth, score };
+    }
+  }
+
+  return best || {
+    lines: [[]],
+    fontSize: theme.text.bodySize,
+    lineHeight: theme.text.bodyLineHeight,
+    width: theme.text.minContentWidth,
+    contentWidth: theme.text.minContentWidth
+  };
 };
 
 const sameStyle = (left, right) =>
@@ -139,7 +217,7 @@ const visibleText = (text) =>
     .replaceAll('\t', '\u00a0\u00a0\u00a0\u00a0');
 
 const textLineWidth = (line, fontSize = theme.text.bodySize) =>
-  Math.ceil(line.reduce((total, segment) => total + segmentWidth(segment), 0) * fontSize * 0.58);
+  Math.ceil(linePixelWidth(line, fontSize));
 
 const emojiCode = (value) =>
   Array.from(value)
@@ -167,7 +245,7 @@ const emojiDataUri = async (value) => {
   return uri;
 };
 
-const lineElements = async (line) => {
+const lineElements = async (line, fontSize = theme.text.bodySize) => {
   const runs = line.reduce((items, segment) => {
     const previous = items.at(-1);
     if (previous && sameStyle(previous, segment)) previous.text += segment.text;
@@ -183,8 +261,8 @@ const lineElements = async (line) => {
           key: index,
           src,
           style: {
-            width: 34,
-            height: 34,
+            width: Math.ceil(fontSize * 1.12),
+            height: Math.ceil(fontSize * 1.12),
             margin: '0 2px',
             objectFit: 'contain'
           }
@@ -221,7 +299,7 @@ const senderGroupFor = (messages, index) => {
 
 const textAvatarSize = (messages) => {
   const textMessages = messages.filter((message) => segmentsWithEntities(message).length > 0);
-  const lineCount = textMessages.reduce((total, message) => total + wrapSegments(segmentsWithEntities(message)).length, 0);
+  const lineCount = textMessages.reduce((total, message) => total + chooseTextLayout(segmentsWithEntities(message)).lines.length, 0);
   const charCount = textMessages.reduce((total, message) => total + (message.text || message.caption || '').length, 0);
 
   if (lineCount >= 8 || charCount > 180) return theme.avatar.dense;
@@ -290,6 +368,19 @@ const bubbleShapeUri = (width, height, role) => {
     'Z'
   ].join(' ');
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${fullWidth}" height="${height}" viewBox="0 0 ${fullWidth} ${height}"><path fill="${theme.background}" d="${path}"/></svg>`;
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+};
+
+const bubbleTailUri = (height) => {
+  const tail = theme.layout.tailWidth;
+  const path = [
+    `M${tail} ${height - tail}`,
+    `V${height}`,
+    'H0',
+    `C15 ${height} ${tail} ${height - 13} ${tail} ${height - tail}`,
+    'Z'
+  ].join(' ');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${tail}" height="${height}" viewBox="0 0 ${tail} ${height}"><path fill="${theme.background}" d="${path}"/></svg>`;
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
 };
 
@@ -394,12 +485,18 @@ export const createQuoteRenderer = ({ api, downloadTelegramFile }) => {
       const textSegments = segmentsWithEntities(message);
       const hasText = textSegments.length > 0;
       const mediaOnly = Boolean(media && !hasText);
-      const lines = hasText ? wrapSegments(textSegments) : media ? [] : wrapSegments(fallbackSegments(message));
+      const textLayout = hasText
+        ? chooseTextLayout(textSegments)
+        : media ? null : chooseTextLayout(fallbackSegments(message));
+      const lines = textLayout?.lines || [];
       const nameElements = await lineElements(plainSegments(name));
-      const bodyLineElements = await Promise.all(lines.map((line) => lineElements(line)));
+      const bodyFontSize = textLayout?.fontSize || theme.text.bodySize;
+      const bodyLineHeight = textLayout?.lineHeight || theme.text.bodyLineHeight;
+      const bodyLineElements = await Promise.all(lines.map((line) => lineElements(line, bodyFontSize)));
       const nameWidth = Math.min(520, Math.ceil(Array.from(name).length * theme.text.nameSize * 0.54));
-      const textWidth = lines.length ? Math.max(...lines.map((line) => textLineWidth(line))) : 0;
-      const contentWidth = Math.max(180, nameWidth, textWidth, media?.width || 0);
+      const textWidth = textLayout?.width || 0;
+      const minTextWidth = theme.text.minBubbleWidth;
+      const contentWidth = Math.max(minTextWidth, nameWidth, textLayout?.contentWidth || textWidth, media?.width || 0);
       const bubbleWidth = mediaOnly
         ? Math.max(media.width + (media?.circle ? theme.media.circleInset : 0) * 2, continuation ? 180 : nameWidth + 72)
         : Math.min(840, contentWidth + 48);
@@ -407,7 +504,7 @@ export const createQuoteRenderer = ({ api, downloadTelegramFile }) => {
       const displayMediaHeight = mediaOnly && media
         ? media.circle ? media.height : Math.round(media.height * (bubbleWidth / media.width))
         : media?.height;
-      const textHeight = lines.length * theme.text.bodyLineHeight;
+      const textHeight = lines.length * bodyLineHeight;
       const mediaHeight = displayMediaHeight || 0;
       const headerHeight = continuation ? 0 : 18 + theme.text.nameLineHeight + 8;
       const contentHeight = (continuation ? 10 : 18) + (continuation ? 0 : theme.text.nameLineHeight) + (continuation ? 0 : 8) + textHeight + (media ? 14 + mediaHeight : 0) + (continuation ? 10 : 20);
@@ -433,12 +530,12 @@ export const createQuoteRenderer = ({ api, downloadTelegramFile }) => {
       },
         renderAvatar ? buildAvatar(avatar, user, color, avatarSize, avatarTop) : null,
         renderAvatar ? el('img', {
-          src: bubbleShapeUri(bubbleWidth, bubbleHeight, role),
+          src: mediaOnly ? bubbleShapeUri(bubbleWidth, bubbleHeight, role) : bubbleTailUri(bubbleHeight),
           style: {
             position: 'absolute',
             left: bubbleLeft - theme.layout.tailWidth,
             top: 0,
-            width: bubbleWidth + theme.layout.tailWidth,
+            width: mediaOnly ? bubbleWidth + theme.layout.tailWidth : theme.layout.tailWidth,
             height: bubbleHeight
           }
         }) : null,
@@ -447,11 +544,11 @@ export const createQuoteRenderer = ({ api, downloadTelegramFile }) => {
             position: 'absolute',
             left: bubbleLeft,
             top: 0,
-            width: bubbleWidth,
+            ...(mediaOnly ? { width: bubbleWidth } : { maxWidth: theme.text.maxContentWidth + 48 }),
             minHeight: bubbleHeight,
             borderRadius: bubbleRadius(role),
-            backgroundColor: renderAvatar ? 'transparent' : theme.background,
-            padding: mediaOnly ? continuation ? 0 : '18px 0 0 0' : continuation ? '10px 16px 10px 24px' : '18px 24px 20px 24px',
+            backgroundColor: theme.background,
+            padding: mediaOnly ? continuation ? 0 : '18px 0 0 0' : continuation ? '10px 24px 10px 24px' : '18px 24px 20px 24px',
             overflow: 'hidden',
             display: 'flex',
             flexDirection: 'column'
@@ -476,8 +573,8 @@ export const createQuoteRenderer = ({ api, downloadTelegramFile }) => {
               key: lineIndex,
               style: {
                 color: '#ffffff',
-                fontSize: theme.text.bodySize,
-                lineHeight: `${theme.text.bodyLineHeight}px`,
+                fontSize: bodyFontSize,
+                lineHeight: `${bodyLineHeight}px`,
                 fontWeight: 400,
                 display: 'flex',
                 flexDirection: 'row',
@@ -536,11 +633,15 @@ export const createQuoteRenderer = ({ api, downloadTelegramFile }) => {
     return Buffer.from(svg);
   };
 
+  const quoteImage = async (messages) =>
+    sharp(await renderQuoteSvg(messages))
+      .trim({ background: { r: 0, g: 0, b: 0, alpha: 0 } });
+
   const renderQuotePng = async (messages) =>
-    sharp(await renderQuoteSvg(messages)).png().toBuffer();
+    (await quoteImage(messages)).png().toBuffer();
 
   const renderStickerWebp = async (messages) => {
-    const resized = sharp(await renderQuoteSvg(messages))
+    const resized = (await quoteImage(messages))
       .resize({ width: 512, height: 430, fit: 'inside', withoutEnlargement: true });
 
     return resized

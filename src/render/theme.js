@@ -15,7 +15,15 @@ export const theme = {
     bodyLineHeight: 37,
     nameSize: 28,
     nameLineHeight: 32,
-    wrapChars: 42
+    wrapChars: 42,
+    minBubbleWidth: 48,
+    minContentWidth: 40,
+    maxContentWidth: 430,
+    widthStep: 14,
+    widthSafety: 8,
+    fontSizes: [34, 33, 32, 31, 30, 29],
+    groupedWidthRatio: 0.72,
+    groupedWidthCap: 360
   },
   media: {
     maxWidth: 560,
