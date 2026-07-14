@@ -18,7 +18,7 @@ export const theme = {
     wrapChars: 42,
     minBubbleWidth: 48,
     minContentWidth: 40,
-    maxContentWidth: 430,
+    maxContentWidth: 460,
     widthStep: 14,
     widthSafety: 8,
     fontSizes: [34, 33, 32, 31, 30, 29],

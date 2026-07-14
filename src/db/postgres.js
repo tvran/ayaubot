@@ -198,6 +198,29 @@ export const createPostgresDb = async (env = process.env) => {
       );
     },
 
+    async codewordWinners(chatId, limit = 10) {
+      const result = await query(
+        `
+        select
+          cw.guessed_by_user_id as user_id,
+          count(*)::int as wins,
+          u.first_name,
+          u.last_name,
+          u.username
+        from codeword_games cw
+        left join users u on u.chat_id = cw.chat_id and u.user_id = cw.guessed_by_user_id
+        where cw.chat_id = $1
+          and cw.status = 'guessed'
+          and cw.guessed_by_user_id is not null
+        group by cw.guessed_by_user_id, u.first_name, u.last_name, u.username
+        order by wins desc, max(cw.guessed_at) desc
+        limit $2
+        `,
+        [chatId, limit]
+      );
+      return result.rows;
+    },
+
     async dailyPick(chatId, kind, excludedUserIds = []) {
       const today = dayString(new Date());
       const current = await query(
