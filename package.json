@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vercel dev",
     "start": "node src/server/index.js",
-    "lint": "node --check api/telegram.js && node --check src/bot/app.js && node --check src/analytics/service.js && node --check src/analytics/tokenize.js && node --check src/db/postgres.js && node --check src/media/service.js && node --check src/server/index.js && node --check src/render/quote.js && node --check src/render/theme.js && node --check scripts/set-webhook.js",
+    "lint": "node --check api/telegram.js && node --check src/bot/app.js && node --check src/analytics/service.js && node --check src/analytics/tokenize.js && node --check src/birthday/service.js && node --check src/db/postgres.js && node --check src/media/service.js && node --check src/server/index.js && node --check src/render/quote.js && node --check src/render/theme.js && node --check scripts/set-webhook.js",
     "test": "node --test",
     "set-webhook": "node scripts/set-webhook.js"
   },

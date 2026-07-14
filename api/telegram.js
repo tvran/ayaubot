@@ -1,5 +1,6 @@
 import { Redis } from '@upstash/redis';
 import { createAnalyticsService } from '../src/analytics/service.js';
+import { createBirthdayService } from '../src/birthday/service.js';
 import { createBotApp } from '../src/bot/app.js';
 import { createPostgresDb } from '../src/db/postgres.js';
 import { createMediaDownloadService } from '../src/media/service.js';
@@ -10,8 +11,9 @@ const redis = process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_RE
   : null;
 const db = await createPostgresDb();
 const analytics = createAnalyticsService({ db });
+const birthdays = createBirthdayService({ db });
 const mediaDownloader = createMediaDownloadService();
-const bot = createBotApp({ redis, analytics, mediaDownloader });
+const bot = createBotApp({ redis, analytics, mediaDownloader, birthdays });
 
 export default async function handler(request, response) {
   try {
