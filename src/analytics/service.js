@@ -5,6 +5,17 @@ const textFromMessage = (message) => message.text || message.caption || '';
 const displayName = (user = {}) =>
   [user.first_name, user.last_name].filter(Boolean).join(' ') || user.username || String(user.id || 'unknown');
 
+const displayMention = (user = {}) =>
+  user.username ? `@${user.username}` : displayName(user);
+
+const shortDate = (value) =>
+  new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'Asia/Almaty'
+  }).format(new Date(value));
+
 const notConfigured = 'Аналитика еще не настроена. База данных где-то в клубе, походу.';
 
 export const createAnalyticsService = ({ db } = {}) => {
@@ -31,7 +42,7 @@ export const createAnalyticsService = ({ db } = {}) => {
     const leaders = await db.topUsersForWords(chatId, rows.map((row) => row.word), days);
     const lines = rows.map((row, index) => {
       const leader = leaders.get(row.word);
-      const leaderText = leader ? `\n   главный спамер этой красоты: ${displayName(leader)}, ${leader.total}` : '';
+      const leaderText = leader ? `\n   главный спамер этой красоты: ${displayMention(leader)}, ${leader.total}` : '';
       return `${index + 1}. ${row.word} — ${row.total}${leaderText}`;
     });
 
@@ -74,10 +85,24 @@ export const createAnalyticsService = ({ db } = {}) => {
     const leaders = await db.topUsersForWords(chatId, [active.word], 14);
     const leader = leaders.get(active.word);
     const leaderText = leader
-      ? `\nЧаще всего это слово юзал(а): ${displayName(leader)}, ${leader.total} раз за 14 дней. Подозрительно, конечно.`
+      ? `\nЧаще всего это слово юзал(а): ${displayMention(leader)}, ${leader.total} раз за 14 дней. Подозрительно, конечно.`
       : '';
 
     return `Подсказка, мои сладкие: в кодовом слове ${active.word.length} букв.${leaderText}`;
+  };
+
+  const codewordStatsText = async (chatId) => {
+    if (!db) return notConfigured;
+    const rows = await db.codewordWinners(chatId, 10);
+    if (!rows.length) return 'Пока победителей codeword нет. Таблица славы пустая, как обещания начать новую жизнь с понедельника.';
+
+    return [
+      'Таблица codeword-охотников:',
+      '',
+      ...rows.map((row, index) => `${index + 1}. ${displayMention(row)} — ${row.wins} ${row.wins === 1 ? 'победа' : row.wins < 5 ? 'победы' : 'побед'}`),
+      '',
+      'Если ты не в списке — это не баг, это мотивация.'
+    ].join('\n');
   };
 
   const stopCodewordText = async (chatId) => {
@@ -134,12 +159,11 @@ export const createAnalyticsService = ({ db } = {}) => {
     if (!rows.length) return 'История пустая. Еще никто не попадал в этот великолепный список.';
 
     return [
-      'История выборов дня:',
+      'Архив подозреваемых дня:',
       '',
-      ...rows.map((row) => {
-        const username = row.username ? ` (@${row.username})` : '';
-        return `${row.day} — ${displayName(row)}${username}`;
-      })
+      ...rows.map((row, index) => `${index + 1}. ${shortDate(row.day)} — ${displayMention(row)}. Дело закрыто, осадочек остался.`),
+      '',
+      'Летопись позора ведется аккуратно. Почти как бухгалтерия, только смешнее.'
     ].join('\n');
   };
 
@@ -149,6 +173,7 @@ export const createAnalyticsService = ({ db } = {}) => {
     startCodewordText,
     codewordStatusText,
     codewordHintText,
+    codewordStatsText,
     stopCodewordText,
     checkCodewordGuess,
     pidorOfDayMessages,

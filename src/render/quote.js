@@ -100,6 +100,14 @@ const segmentWidth = (segment, fontSize = theme.text.bodySize) => {
 const linePixelWidth = (line, fontSize = theme.text.bodySize) =>
   line.reduce((total, segment) => total + segmentWidth(segment, fontSize), 0);
 
+const lineWords = (line) =>
+  line
+    .map((segment) => segment.text)
+    .join('')
+    .trim()
+    .split(/\s+/u)
+    .filter(Boolean);
+
 const trimLeadingSpaces = (line) => {
   while (line.length && /\s/u.test(line[0].text)) line.shift();
   return line;
@@ -173,8 +181,20 @@ const lineLayoutScore = (lines, width, fontSize) => {
   const emptyRight = widths.reduce((total, lineWidth) => total + Math.max(0, width - lineWidth), 0) / Math.max(1, lines.length);
   const raggedness = widths.reduce((total, lineWidth) => total + Math.abs(fullest - lineWidth), 0) / Math.max(1, lines.length);
   const lastLineWaste = Math.max(0, width - (widths.at(-1) || 0));
+  const shortInteriorLines = widths
+    .slice(0, -1)
+    .reduce((total, lineWidth) => total + Math.max(0, width * 0.7 - lineWidth), 0);
+  const awkwardShortWordBreaks = lines.slice(0, -1).reduce((total, line, index) => {
+    const currentWords = lineWords(line);
+    const nextWords = lineWords(lines[index + 1]);
+    const lastWord = currentWords.at(-1) || '';
+    const nextWord = nextWords[0] || '';
+    const startsWithShortWord = nextWord.length > 0 && nextWord.length <= 3;
+    const splitsShortPair = lastWord.length > 0 && lastWord.length <= 4 && startsWithShortWord;
+    return total + (startsWithShortWord ? fontSize * 3 : 0) + (splitsShortPair ? fontSize * 8 : 0);
+  }, 0);
   const overflow = widths.some((lineWidth) => lineWidth > width + 0.5) ? 10000 : 0;
-  return overflow + emptyRight * 0.9 + raggedness * 0.2 + lastLineWaste * 0.45 + lines.length * fontSize * 0.2 + width * 0.05;
+  return overflow + emptyRight * 0.7 + raggedness * 0.35 + shortInteriorLines * 1.4 + awkwardShortWordBreaks + lastLineWaste * 0.25 + lines.length * fontSize * 0.2 + width * 0.03;
 };
 
 const chooseTextLayout = (segments) => {
@@ -641,12 +661,20 @@ export const createQuoteRenderer = ({ api, downloadTelegramFile }) => {
     (await quoteImage(messages)).png().toBuffer();
 
   const renderStickerWebp = async (messages) => {
-    const resized = (await quoteImage(messages))
-      .resize({ width: 512, height: 430, fit: 'inside', withoutEnlargement: true });
+    const resized = await (await quoteImage(messages))
+      .resize({ width: 512, height: 430, fit: 'inside', withoutEnlargement: true })
+      .png()
+      .toBuffer();
+    const { width = 512, height = 430 } = await sharp(resized).metadata();
+    const horizontalPadding = Math.max(0, 512 - width);
+    const bottomPadding = Math.min(theme.layout.stickerFooter, Math.max(0, 512 - height));
 
-    return resized
+    return sharp(resized)
       .extend({
-        bottom: theme.layout.stickerFooter,
+        top: 0,
+        bottom: bottomPadding,
+        left: 0,
+        right: horizontalPadding,
         background: { r: 0, g: 0, b: 0, alpha: 0 }
       })
       .webp({ quality: 88 })

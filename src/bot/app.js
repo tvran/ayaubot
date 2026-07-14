@@ -41,6 +41,7 @@ const helpText = [
   '/codeword_start — запускаю игру в кодовое слово',
   '/codeword — статус игры, че там по секретику',
   '/codeword_hint — подсказка: длина слова и кто его чаще юзал',
+  '/codeword_stats — кто сколько раз побеждал',
   '/codeword_stop — стопаю игру, если вы заебались',
   '',
   '/help — показать эту красоту еще раз'
@@ -56,6 +57,7 @@ export const parseCommand = (message) => {
     'pidor:list': 'pidor_list',
     'pidor:reset': 'pidor_reset',
     'codeword:hint': 'codeword_hint',
+    'codeword:stats': 'codeword_stats',
     'codeword:stop': 'codeword_stop',
     'codeword:start': 'codeword_start'
   };
@@ -71,6 +73,7 @@ export const createBotApp = ({ env = process.env, redis, analytics } = {}) => {
   const allowedChatIds = parseAllowedChatIds(env);
   const stickerSetName = env.STICKER_SET_NAME;
   const stickerSetTitle = env.STICKER_SET_TITLE || 'Group Quotes';
+  const stickerSetOwnerId = env.STICKER_SET_OWNER_ID;
   const botId = Number((token || '').split(':')[0]);
 
   const api = async (method, payload, options = {}) => {
@@ -87,6 +90,7 @@ export const createBotApp = ({ env = process.env, redis, analytics } = {}) => {
   console.log('bot config', {
     allowedChatIds: Array.from(allowedChatIds),
     stickerSetName,
+    stickerSetOwnerConfigured: Boolean(stickerSetOwnerId),
     analyticsEnabled: Boolean(analytics),
     redisEnabled: Boolean(redis)
   });
@@ -167,14 +171,18 @@ export const createBotApp = ({ env = process.env, redis, analytics } = {}) => {
       format: 'static'
     });
 
+  const isMissingStickerSetError = (error) =>
+    /sticker set not found|stickerset_invalid|stickers? set .* not found/i.test(error?.message || '');
+
   const saveStickerBuffer = async (chatId, fromUserId, commandMessage, sticker) => {
     if (!stickerSetName) {
       await sendMessage(chatId, 'Стикерпак не настроен, пиздец. Позовите админа этого цирка.', commandMessage.message_id);
       return;
     }
 
+    const ownerUserId = stickerSetOwnerId || fromUserId;
     const form = new FormData();
-    form.append('user_id', String(fromUserId));
+    form.append('user_id', String(ownerUserId));
     form.append('name', stickerSetName);
     form.append('sticker', stickerInputFormValue('quote_file'));
     form.append('quote_file', new Blob([sticker]), 'quote.webp');
@@ -182,8 +190,20 @@ export const createBotApp = ({ env = process.env, redis, analytics } = {}) => {
     try {
       await api('addStickerToSet', form, { formData: true });
     } catch (error) {
+      console.error('addStickerToSet failed', {
+        stickerSetName,
+        ownerUserId: String(ownerUserId),
+        commandUserId: String(fromUserId),
+        error: error.message
+      });
+
+      if (!isMissingStickerSetError(error)) {
+        await sendMessage(chatId, 'Не смог добавить в стикерпак. В логах теперь есть настоящая причина, без этой маскировочной хуйни.', commandMessage.message_id);
+        return;
+      }
+
       const createForm = new FormData();
-      createForm.append('user_id', String(fromUserId));
+      createForm.append('user_id', String(ownerUserId));
       createForm.append('name', stickerSetName);
       createForm.append('title', stickerSetTitle);
       createForm.append('stickers', JSON.stringify([{
@@ -291,6 +311,10 @@ export const createBotApp = ({ env = process.env, redis, analytics } = {}) => {
     }
     if (command.name === 'codeword_hint') {
       await sendMessage(chatId, await analytics.codewordHintText(chatId), message.message_id);
+      return true;
+    }
+    if (command.name === 'codeword_stats') {
+      await sendMessage(chatId, await analytics.codewordStatsText(chatId), message.message_id);
       return true;
     }
     return false;
