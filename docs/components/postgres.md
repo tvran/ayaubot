@@ -86,9 +86,14 @@ Adapter возвращает публичное поле `pool`, но штатн
 
 Для записи `word_counts` и ежедневного выбора дата формируется в приложении через `Date#toISOString()`, то есть в UTC. Фильтры топов используют PostgreSQL `current_date`, зависящий от timezone сессии БД. При отличающейся timezone границы периода могут расходиться около полуночи.
 
+## Таблицы дней рождения
+
+`birthdays` хранит одну запись на `(chat_id, user_id)`: отображаемый профиль, название чата, день и месяц, необязательный год рождения и timestamps. Индекс `(birth_month, birth_day)` используется ежедневной проверкой. `upsertBirthday` позволяет повторной команде обновить дату, `listBirthdays` строит календарь, а `birthdayReminderRecipients` возвращает остальных зарегистрированных участников того же чата.
+
+`birthday_notifications` содержит delivery marker с составным ключом `(chat_id, birthday_user_id, recipient_user_id, event_date, kind)`. `claimBirthdayNotification` вставляет marker через `ON CONFLICT DO NOTHING` до Telegram API-вызова, поэтому параллельные процессы не отправят одно событие дважды. При временной ошибке `releaseBirthdayNotification` разрешает повтор на следующей проверке; записи старше 400 дней удаляются.
+
 ## Миграции и хранение
 
 Схема идемпотентно создаёт отсутствующие объекты, но не умеет изменять существующие столбцы. Версий миграций нет. Также нет foreign key, check constraint для статусов, retention policy или очистки старых агрегатов.
 
 Для production-изменений схемы следует ввести отдельные миграции и не полагаться только на `CREATE IF NOT EXISTS`.
-

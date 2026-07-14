@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { Redis } from '@upstash/redis';
 import { createAnalyticsService } from '../analytics/service.js';
+import { createBirthdayService } from '../birthday/service.js';
 import { createBotApp } from '../bot/app.js';
 import { createPostgresDb } from '../db/postgres.js';
 import { createMediaDownloadService } from '../media/service.js';
@@ -12,8 +13,17 @@ const redis = process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_RE
   : null;
 const db = await createPostgresDb();
 const analytics = createAnalyticsService({ db });
+const birthdays = createBirthdayService({ db });
 const mediaDownloader = createMediaDownloadService();
-const bot = createBotApp({ redis, analytics, mediaDownloader });
+const bot = createBotApp({ redis, analytics, mediaDownloader, birthdays });
+
+birthdays.startScheduler({
+  sendMessage: (chatId, text, extra = {}) => bot.api('sendMessage', {
+    chat_id: chatId,
+    text,
+    ...extra
+  })
+});
 
 const readJson = async (request) => {
   const chunks = [];

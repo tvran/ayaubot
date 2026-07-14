@@ -6,7 +6,7 @@
 
 1. создаёт Redis client, только если заданы обе Upstash-переменные;
 2. вызывает `createPostgresDb()` и ждёт инициализации схемы;
-3. создаёт Analytics Service даже при `db === null`;
+3. создаёт Analytics Service и Birthday Service даже при `db === null`;
 4. создаёт Media Download Service;
 5. создаёт Bot App и экспортирует HTTP handler по умолчанию.
 
@@ -22,7 +22,7 @@ Vercel-конфигурация в `vercel.json` ограничивает вып
 
 ## `src/server/index.js`: Node.js HTTP-сервер
 
-Сборка зависимостей совпадает с Vercel-вариантом. Дополнительно модуль создаёт `node:http` server и слушает `PORT` либо 3000.
+Сборка зависимостей совпадает с Vercel-вариантом. Дополнительно модуль запускает планировщик дней рождения, создаёт `node:http` server и слушает `PORT` либо 3000. Vercel handler планировщик не запускает.
 
 `readJson(request)` полностью собирает body в память и разбирает JSON. Лимит размера тела не установлен. Пустое тело превращается в `{}`.
 

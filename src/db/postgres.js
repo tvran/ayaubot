@@ -47,6 +47,34 @@ create table if not exists daily_picks (
   created_at timestamptz not null default now(),
   primary key (chat_id, kind, day)
 );
+
+create table if not exists birthdays (
+  chat_id bigint not null,
+  user_id bigint not null,
+  chat_title text,
+  first_name text,
+  last_name text,
+  username text,
+  birth_day smallint not null check (birth_day between 1 and 31),
+  birth_month smallint not null check (birth_month between 1 and 12),
+  birth_year smallint check (birth_year is null or birth_year between 1900 and 9999),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (chat_id, user_id)
+);
+
+create index if not exists birthdays_month_day_idx
+on birthdays (birth_month, birth_day);
+
+create table if not exists birthday_notifications (
+  chat_id bigint not null,
+  birthday_user_id bigint not null,
+  recipient_user_id bigint not null,
+  event_date date not null,
+  kind text not null,
+  created_at timestamptz not null default now(),
+  primary key (chat_id, birthday_user_id, recipient_user_id, event_date, kind)
+);
 `;
 
 const dayString = (date) => date.toISOString().slice(0, 10);
@@ -292,6 +320,132 @@ export const createPostgresDb = async (env = process.env) => {
         [chatId, kind, limit]
       );
       return result.rows;
+    },
+
+    async upsertBirthday({ chatId, chatTitle, user, day, month, year }) {
+      await query(
+        `
+        insert into birthdays (
+          chat_id, user_id, chat_title, first_name, last_name, username,
+          birth_day, birth_month, birth_year, updated_at
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+        on conflict (chat_id, user_id) do update set
+          chat_title = excluded.chat_title,
+          first_name = excluded.first_name,
+          last_name = excluded.last_name,
+          username = excluded.username,
+          birth_day = excluded.birth_day,
+          birth_month = excluded.birth_month,
+          birth_year = excluded.birth_year,
+          updated_at = now()
+        `,
+        [
+          chatId,
+          user.id,
+          chatTitle,
+          user.first_name || null,
+          user.last_name || null,
+          user.username || null,
+          day,
+          month,
+          year
+        ]
+      );
+    },
+
+    async removeBirthday(chatId, userId) {
+      if (!userId) return false;
+      const result = await query(
+        'delete from birthdays where chat_id = $1 and user_id = $2',
+        [chatId, userId]
+      );
+      return result.rowCount > 0;
+    },
+
+    async listBirthdays(chatId) {
+      const result = await query(
+        `
+        select *
+        from birthdays
+        where chat_id = $1
+        order by birth_month, birth_day, first_name, user_id
+        `,
+        [chatId]
+      );
+      return result.rows;
+    },
+
+    async birthdaysForDate({ month, day, includeLeapDay = false }) {
+      const result = await query(
+        `
+        select *
+        from birthdays
+        where (birth_month = $1 and birth_day = $2)
+          or ($3::boolean and birth_month = 2 and birth_day = 29)
+        order by chat_id, user_id
+        `,
+        [month, day, includeLeapDay]
+      );
+      return result.rows;
+    },
+
+    async birthdayReminderRecipients(chatId, excludedUserId) {
+      const result = await query(
+        `
+        select user_id, first_name, last_name, username
+        from birthdays
+        where chat_id = $1 and user_id <> $2
+        order by user_id
+        `,
+        [chatId, excludedUserId]
+      );
+      return result.rows;
+    },
+
+    async claimBirthdayNotification({
+      chatId,
+      birthdayUserId,
+      recipientUserId,
+      eventDate,
+      kind
+    }) {
+      const result = await query(
+        `
+        insert into birthday_notifications (
+          chat_id, birthday_user_id, recipient_user_id, event_date, kind
+        )
+        values ($1, $2, $3, $4, $5)
+        on conflict do nothing
+        returning 1
+        `,
+        [chatId, birthdayUserId, recipientUserId, eventDate, kind]
+      );
+      return result.rowCount > 0;
+    },
+
+    async releaseBirthdayNotification({
+      chatId,
+      birthdayUserId,
+      recipientUserId,
+      eventDate,
+      kind
+    }) {
+      await query(
+        `
+        delete from birthday_notifications
+        where chat_id = $1
+          and birthday_user_id = $2
+          and recipient_user_id = $3
+          and event_date = $4
+          and kind = $5
+        `,
+        [chatId, birthdayUserId, recipientUserId, eventDate, kind]
+      );
+    },
+
+    async deleteBirthdayNotificationsBefore(date) {
+      await query('delete from birthday_notifications where event_date < $1', [date]);
     }
   };
 };

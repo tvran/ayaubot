@@ -46,14 +46,19 @@ const helpText = [
   '/codeword_stats — кто сколько раз побеждал',
   '/codeword_stop — стопаю игру, если вы заебались',
   '',
+  '/birthday ДД.ММ.ГГГГ — записать или обновить свой день рождения',
+  '/birthdays — календарь дней рождения этого чата',
+  '/birthday_remove — удалить свой день рождения',
+  '',
   '/help — показать эту красоту еще раз'
 ].join('\n');
 
 export const parseCommand = (message) => {
   const text = message.text || message.caption || '';
-  const match = text.match(/^\/([a-z_]+)(?:@\w+)?(?:\s+([a-z_]+|\d{1,2}))?\s*$/i);
+  const match = text.match(/^\/([a-z_]+)(?:@\w+)?(?:\s+([\s\S]*?))?\s*$/i);
   if (!match) return null;
-  const arg = match[2]?.toLowerCase();
+  const args = (match[2] || '').trim();
+  const arg = args.split(/\s+/)[0]?.toLowerCase();
   const name = match[1].toLowerCase();
   const aliases = {
     'pidor:list': 'pidor_list',
@@ -66,11 +71,12 @@ export const parseCommand = (message) => {
 
   return {
     name: aliases[`${name}:${arg}`] || name,
-    count: Math.min(Math.max(Number(/^\d+$/.test(arg || '') ? arg : 1), 1), 10)
+    count: Math.min(Math.max(Number(/^\d+$/.test(arg || '') ? arg : 1), 1), 10),
+    args
   };
 };
 
-export const createBotApp = ({ env = process.env, redis, analytics, mediaDownloader } = {}) => {
+export const createBotApp = ({ env = process.env, redis, analytics, mediaDownloader, birthdays } = {}) => {
   const token = env.BOT_TOKEN;
   const allowedChatIds = parseAllowedChatIds(env);
   const stickerSetName = env.STICKER_SET_NAME;
@@ -94,6 +100,7 @@ export const createBotApp = ({ env = process.env, redis, analytics, mediaDownloa
     stickerSetName,
     stickerSetOwnerConfigured: Boolean(stickerSetOwnerId),
     analyticsEnabled: Boolean(analytics),
+    birthdaysEnabled: Boolean(birthdays?.enabled),
     redisEnabled: Boolean(redis),
     mediaDownloadsEnabled: Boolean(mediaDownloader?.enabled)
   });
@@ -347,6 +354,25 @@ export const createBotApp = ({ env = process.env, redis, analytics, mediaDownloa
     return false;
   };
 
+  const handleBirthdayCommand = async (message, command) => {
+    if (!birthdays) return false;
+    const chatId = message.chat.id;
+
+    if (command.name === 'birthday' || command.name === 'bday') {
+      await sendMessage(chatId, await birthdays.register(message, command.args), message.message_id);
+      return true;
+    }
+    if (command.name === 'birthdays' || command.name === 'birthday_list') {
+      await sendMessage(chatId, await birthdays.list(message), message.message_id);
+      return true;
+    }
+    if (command.name === 'birthday_remove' || command.name === 'birthday_delete') {
+      await sendMessage(chatId, await birthdays.remove(message), message.message_id);
+      return true;
+    }
+    return false;
+  };
+
   const handleUpdate = async (update) => {
     const message = update.message || update.edited_message;
     if (!message) return;
@@ -377,6 +403,7 @@ export const createBotApp = ({ env = process.env, redis, analytics, mediaDownloa
       return;
     }
 
+    if (await handleBirthdayCommand(message, command)) return;
     if (analytics && await handleAnalyticsCommand(message, command)) return;
   };
 
