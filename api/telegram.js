@@ -2,6 +2,7 @@ import { Redis } from '@upstash/redis';
 import { createAnalyticsService } from '../src/analytics/service.js';
 import { createBotApp } from '../src/bot/app.js';
 import { createPostgresDb } from '../src/db/postgres.js';
+import { createMediaDownloadService } from '../src/media/service.js';
 
 const webhookSecret = process.env.WEBHOOK_SECRET;
 const redis = process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
@@ -9,7 +10,8 @@ const redis = process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_RE
   : null;
 const db = await createPostgresDb();
 const analytics = createAnalyticsService({ db });
-const bot = createBotApp({ redis, analytics });
+const mediaDownloader = createMediaDownloadService();
+const bot = createBotApp({ redis, analytics, mediaDownloader });
 
 export default async function handler(request, response) {
   try {
