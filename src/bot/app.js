@@ -27,6 +27,8 @@ const messagePayload = (message) => ({
 const helpText = [
   'Короче, что я умею, сладкие:',
   '',
+  'Кидай ссылку на Instagram Reels или TikTok — скачаю и пришлю видео прямо в чат',
+  '',
   '/q — делаю цитату-стикер из сообщения, на которое ты ответил',
   '/q 2 ... /q 10 — беру несколько сообщений подряд, без этой вашей хуйни',
   '/qs — сохраняю цитату из /q в стикерпак группы',
@@ -68,7 +70,7 @@ export const parseCommand = (message) => {
   };
 };
 
-export const createBotApp = ({ env = process.env, redis, analytics } = {}) => {
+export const createBotApp = ({ env = process.env, redis, analytics, mediaDownloader } = {}) => {
   const token = env.BOT_TOKEN;
   const allowedChatIds = parseAllowedChatIds(env);
   const stickerSetName = env.STICKER_SET_NAME;
@@ -92,7 +94,8 @@ export const createBotApp = ({ env = process.env, redis, analytics } = {}) => {
     stickerSetName,
     stickerSetOwnerConfigured: Boolean(stickerSetOwnerId),
     analyticsEnabled: Boolean(analytics),
-    redisEnabled: Boolean(redis)
+    redisEnabled: Boolean(redis),
+    mediaDownloadsEnabled: Boolean(mediaDownloader?.enabled)
   });
 
   const chatAllowed = (chatId) => allowedChatIds.size === 0 || allowedChatIds.has(String(chatId));
@@ -162,6 +165,30 @@ export const createBotApp = ({ env = process.env, redis, analytics } = {}) => {
     await sendBuffer('sendSticker', chatId, 'sticker', 'quote.webp', sticker, {
       reply_to_message_id: commandMessage.message_id
     });
+  };
+
+  const mediaErrorText = (error) => {
+    if (error?.code === 'file_too_large') return 'Видео слишком большое для отправки. Ссылка мощная, а я пока нет.';
+    if (error?.code === 'timeout') return 'Не успел скачать видео вовремя. Попробуй ещё раз чуть позже.';
+    if (error?.code === 'spawn_failed') return 'Загрузчик видео не настроен. Админу нужен yt-dlp, вот такая производственная драма.';
+    return 'Не смог скачать это видео. Возможно, оно приватное, удалено или площадка опять что-то сломала.';
+  };
+
+  const handleMediaLinks = async (message) => {
+    const urls = mediaDownloader?.urlsFromMessage(message) || [];
+    for (const url of urls) {
+      try {
+        await api('sendChatAction', { chat_id: message.chat.id, action: 'upload_video' });
+        const video = await mediaDownloader.downloadVideo(url);
+        await sendBuffer('sendVideo', message.chat.id, 'video', video.filename, video.buffer, {
+          reply_to_message_id: message.message_id,
+          supports_streaming: true
+        });
+      } catch (error) {
+        console.error('media download failed', { url, code: error?.code, error });
+        await sendMessage(message.chat.id, mediaErrorText(error), message.message_id);
+      }
+    }
   };
 
   const stickerInputFormValue = (name, emojis = '💬') =>
@@ -341,6 +368,7 @@ export const createBotApp = ({ env = process.env, redis, analytics } = {}) => {
       await analytics?.ingestMessage(message);
       const guessText = await analytics?.checkCodewordGuess(message);
       if (guessText) await sendMessage(message.chat.id, guessText, message.message_id);
+      await handleMediaLinks(message);
       return;
     }
 
