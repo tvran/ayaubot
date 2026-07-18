@@ -24,7 +24,7 @@ const messagePayload = (message) => ({
   video: message.video
 });
 
-const helpText = [
+const buildHelpText = (percentCommand = 'percent') => [
   'Короче, что я умею, сладкие:',
   '',
   'Кидай ссылку на Instagram Reels или TikTok — скачаю и пришлю видео прямо в чат',
@@ -39,6 +39,7 @@ const helpText = [
   '/pidor — выбираю подозреваемого дня, строго без бота, я не участвую в этом цирке',
   '/pidor_list — история выборов',
   '/pidor_reset — сбросить выбор на сегодня',
+  `/${percentCommand} <параметр> — измеряю человека в процентах; reply измеряет автора сообщения`,
   '',
   '/codeword_start — запускаю игру в кодовое слово',
   '/codeword — статус игры, че там по секретику',
@@ -76,13 +77,21 @@ export const parseCommand = (message) => {
   };
 };
 
-export const createBotApp = ({ env = process.env, redis, analytics, mediaDownloader, birthdays } = {}) => {
+export const createBotApp = ({
+  env = process.env,
+  redis,
+  analytics,
+  mediaDownloader,
+  birthdays,
+  percentGame
+} = {}) => {
   const token = env.BOT_TOKEN;
   const allowedChatIds = parseAllowedChatIds(env);
   const stickerSetName = env.STICKER_SET_NAME;
   const stickerSetTitle = env.STICKER_SET_TITLE || 'Group Quotes';
   const stickerSetOwnerId = env.STICKER_SET_OWNER_ID;
   const botId = Number((token || '').split(':')[0]);
+  const helpText = buildHelpText(percentGame?.command);
 
   const api = async (method, payload, options = {}) => {
     const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
@@ -101,6 +110,7 @@ export const createBotApp = ({ env = process.env, redis, analytics, mediaDownloa
     stickerSetOwnerConfigured: Boolean(stickerSetOwnerId),
     analyticsEnabled: Boolean(analytics),
     birthdaysEnabled: Boolean(birthdays?.enabled),
+    percentGameEnabled: Boolean(percentGame?.enabled),
     redisEnabled: Boolean(redis),
     mediaDownloadsEnabled: Boolean(mediaDownloader?.enabled)
   });
@@ -400,6 +410,11 @@ export const createBotApp = ({ env = process.env, redis, analytics, mediaDownloa
 
     if (['q', 'qs', 'qd'].includes(command.name)) {
       await handleQuoteCommand(message, command);
+      return;
+    }
+
+    if (percentGame && command.name === percentGame.command) {
+      await sendMessage(message.chat.id, await percentGame.playText(message, command.args), message.message_id);
       return;
     }
 

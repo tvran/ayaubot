@@ -5,6 +5,7 @@ import { createBirthdayService } from '../birthday/service.js';
 import { createBotApp } from '../bot/app.js';
 import { createPostgresDb } from '../db/postgres.js';
 import { createMediaDownloadService } from '../media/service.js';
+import { createPercentGameService } from '../games/percent.js';
 
 const port = Number(process.env.PORT || 3000);
 const webhookSecret = process.env.WEBHOOK_SECRET;
@@ -15,7 +16,8 @@ const db = await createPostgresDb();
 const analytics = createAnalyticsService({ db });
 const birthdays = createBirthdayService({ db });
 const mediaDownloader = createMediaDownloadService();
-const bot = createBotApp({ redis, analytics, mediaDownloader, birthdays });
+const percentGame = createPercentGameService({ redis });
+const bot = createBotApp({ redis, analytics, mediaDownloader, birthdays, percentGame });
 
 birthdays.startScheduler({
   sendMessage: (chatId, text, extra = {}) => bot.api('sendMessage', {

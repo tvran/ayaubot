@@ -7,7 +7,7 @@
 1. создаёт Redis client, только если заданы обе Upstash-переменные;
 2. вызывает `createPostgresDb()` и ждёт инициализации схемы;
 3. создаёт Analytics Service и Birthday Service даже при `db === null`;
-4. создаёт Media Download Service;
+4. создаёт Media Download Service и Percent Game;
 5. создаёт Bot App и экспортирует HTTP handler по умолчанию.
 
 Контракт handler:

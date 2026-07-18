@@ -1,11 +1,11 @@
 # Приложение Telegram-бота
 
-Файл `src/bot/app.js` связывает Telegram Bot API, Redis, рендерер цитат, загрузчик внешних видео, сервис аналитики и дни рождения.
+Файл `src/bot/app.js` связывает Telegram Bot API, Redis, рендерер цитат, загрузчик внешних видео, сервис аналитики, Percent Game и дни рождения.
 
 ## Публичный API
 
 ```js
-createBotApp({ env = process.env, redis, analytics, mediaDownloader, birthdays })
+createBotApp({ env = process.env, redis, analytics, mediaDownloader, birthdays, percentGame })
 // → { api, chatAllowed, handleUpdate }
 ```
 
@@ -42,10 +42,15 @@ parseCommand(message)
 3. разобрать команду;
 4. для обычного сообщения — записать аналитику, проверить кодовое слово и обработать media URL;
 5. для `q/qs/qd` — выполнить операцию с цитатой;
-6. команды дней рождения передать в Birthday Service;
-7. для остальных команд — обратиться к Analytics Service.
+6. `/percent` передать в Percent Game;
+7. команды дней рождения передать в Birthday Service;
+8. для остальных команд — обратиться к Analytics Service.
 
 Неизвестные команды молча игнорируются. Команды не входят в статистику, кроме `/pidor`: перед выбором пользователя она явно вызывает `analytics.ingestMessage`, чтобы инициатор появился в таблице `users`; её текст всё равно не даёт слов, поскольку токенизатор исключает строки, начинающиеся с `/`.
+
+## Процентная игра: `/percent <параметр>`
+
+Bot App передаёт исходное сообщение и полную строку аргументов методу `percentGame.playText`, затем отправляет полученный текст как reply на команду. Выбор цели, проверка параметра, случайный результат и Redis TTL остаются внутри Percent Game. Подробный контракт и формат `config/percent-game.json` описаны в [отдельном разделе](percent-game.md).
 
 ## Instagram Reels и TikTok
 
