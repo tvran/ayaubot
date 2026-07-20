@@ -61,6 +61,18 @@ test('uses the replied-to user and resolves parameter aliases', async () => {
   assert.match(redis.writes[0].key, /:20:gay$/);
 });
 
+test('supports performative and its aliases from config', async () => {
+  for (const input of ['performative', 'перформатив', 'туран']) {
+    const redis = createFakeRedis();
+    const service = createPercentGameService({ redis, config, random: () => 0 });
+
+    const text = await service.playText(message, input);
+
+    assert.equal(text, '@ayau перформатив на 0%. Даже его «борьба» выглядит как стриптиз для лайков.');
+    assert.match(redis.writes[0].key, /:10:performative$/);
+  }
+});
+
 test('stores independent results for each user and parameter', async () => {
   const redis = createFakeRedis();
   const randomValues = [0.1, 0, 0.9, 0];
@@ -82,6 +94,9 @@ test('shows usage, available parameters, and Redis requirement', async () => {
   const service = createPercentGameService({ config });
 
   assert.match(await service.playText(message, ''), /\/percent <параметр>/);
-  assert.match(await service.playText(message, 'unknown'), /gay, toxic, dead_inside, alcoholic, genius/);
+  assert.match(
+    await service.playText(message, 'unknown'),
+    /gay, toxic, dead_inside, alcoholic, performative, genius/
+  );
   assert.match(await service.playText(message, 'gay'), /нужен Redis/);
 });
