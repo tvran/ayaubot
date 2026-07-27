@@ -22,6 +22,8 @@ export const createAnalyticsService = ({ db } = {}) => {
   const ingestMessage = async (message) => {
     if (!db || !message?.from || !message?.chat) return;
     await db.upsertUser(message.chat.id, message.from);
+    await db.incrementMessageCount(message.chat.id, message.from.id);
+    await db.storeChatMessage(message);
 
     const words = tokenizeText(textFromMessage(message));
     if (!words.length) return;
@@ -47,6 +49,24 @@ export const createAnalyticsService = ({ db } = {}) => {
     });
 
     return [`Топ слов за ${days} дней, держитесь за жопы:`, '', ...lines].join('\n');
+  };
+
+  const spamStatsText = async (chatId) => {
+    if (!db) return notConfigured;
+    const rows = await db.topMessageSenders(chatId, 10);
+    if (!rows.length) return 'Пока счетчик сообщений пустой. Спам-машина только завелась, дайте ей пожрать данных.';
+
+    const lines = rows.map((row, index) =>
+      `${index + 1}. ${displayMention(row)} — ${row.count} ${row.count === 1 ? 'сообщение' : row.count < 5 ? 'сообщения' : 'сообщений'}`
+    );
+
+    return [
+      'Главные спамеры за всё время:',
+      '',
+      ...lines,
+      '',
+      'Считаю по сообщениям с момента включения статистики. Кто сверху — тот не молчит, а ведет стендап без сцены.'
+    ].join('\n');
   };
 
   const ensureActiveCodeword = async (chatId) => {
@@ -170,6 +190,7 @@ export const createAnalyticsService = ({ db } = {}) => {
   return {
     ingestMessage,
     topWordsText,
+    spamStatsText,
     startCodewordText,
     codewordStatusText,
     codewordHintText,

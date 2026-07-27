@@ -361,9 +361,9 @@ const fallbackSegments = (message) => {
 };
 
 const bubbleRadius = (role) => {
-  if (role === 'top') return '28px 28px 28px 10px';
-  if (role === 'middle') return '10px 18px 18px 10px';
-  if (role === 'bottom') return '10px 28px 28px 0';
+  if (role === 'top') return '28px 28px 10px 10px';
+  if (role === 'middle') return '10px 10px 10px 10px';
+  if (role === 'bottom') return '10px 10px 28px 0';
   return '28px 28px 28px 0';
 };
 
@@ -486,6 +486,17 @@ export const createQuoteRenderer = ({ api, downloadTelegramFile }) => {
     const blocks = [];
     let y = theme.layout.topPadding;
     let canvasWidth = 0;
+    const groupedAvatarSize = messages.length > 1
+      ? Math.max(...messages.map((message) => {
+        const media = mediaFile(message);
+        if (media?.circle) return theme.avatar.circleMedia;
+        if (media) return theme.avatar.media;
+        return theme.avatar.groupedText;
+      }))
+      : null;
+    const groupedBubbleLeft = groupedAvatarSize
+      ? theme.layout.leftPadding + groupedAvatarSize + theme.layout.tailWidth - theme.layout.tailOverlap
+      : null;
 
     for (const [index, message] of messages.entries()) {
       const user = quoteUser(message);
@@ -531,8 +542,8 @@ export const createQuoteRenderer = ({ api, downloadTelegramFile }) => {
       const mediaTopGap = mediaOnly ? continuation ? 0 : 8 : 14;
       const mediaOnlyHeight = headerHeight + mediaTopGap + mediaHeight;
       const bubbleHeight = mediaOnly ? mediaOnlyHeight : messages.length > 1 ? contentHeight : Math.max(104, contentHeight);
-      const avatarSize = mediaOnly ? media?.circle ? theme.avatar.circleMedia : theme.avatar.media : textAvatarSize(senderGroup);
-      const bubbleLeft = theme.layout.leftPadding + avatarSize + theme.layout.tailWidth - theme.layout.tailOverlap;
+      const avatarSize = groupedAvatarSize || (mediaOnly ? media?.circle ? theme.avatar.circleMedia : theme.avatar.media : textAvatarSize(senderGroup));
+      const bubbleLeft = groupedBubbleLeft || theme.layout.leftPadding + avatarSize + theme.layout.tailWidth - theme.layout.tailOverlap;
       const avatarTop = renderAvatar ? bubbleHeight - avatarSize : 0;
       if (renderAvatar && y + avatarTop < theme.layout.topPadding) y += theme.layout.topPadding - (y + avatarTop);
       canvasWidth = Math.max(canvasWidth, bubbleLeft + bubbleWidth + theme.layout.leftPadding);

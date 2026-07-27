@@ -5,6 +5,7 @@ import { createBotApp } from '../src/bot/app.js';
 import { createPostgresDb } from '../src/db/postgres.js';
 import { createMediaDownloadService } from '../src/media/service.js';
 import { createPercentGameService } from '../src/games/percent.js';
+import { createDailySummaryService } from '../src/summary/service.js';
 
 const webhookSecret = process.env.WEBHOOK_SECRET;
 const redis = process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
@@ -15,7 +16,8 @@ const analytics = createAnalyticsService({ db });
 const birthdays = createBirthdayService({ db });
 const mediaDownloader = createMediaDownloadService();
 const percentGame = createPercentGameService({ redis });
-const bot = createBotApp({ redis, analytics, mediaDownloader, birthdays, percentGame });
+const dailySummary = createDailySummaryService({ db });
+const bot = createBotApp({ redis, analytics, mediaDownloader, birthdays, percentGame, dailySummary });
 
 export default async function handler(request, response) {
   try {

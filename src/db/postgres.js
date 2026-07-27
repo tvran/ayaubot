@@ -24,6 +24,33 @@ on word_counts (chat_id, day, word);
 create index if not exists word_counts_chat_day_user_idx
 on word_counts (chat_id, day, user_id);
 
+create table if not exists message_counts (
+  chat_id bigint not null,
+  user_id bigint not null,
+  count integer not null default 0,
+  primary key (chat_id, user_id)
+);
+
+create table if not exists chat_messages (
+  chat_id bigint not null,
+  message_id bigint not null,
+  user_id bigint,
+  text text not null,
+  sent_at timestamptz not null,
+  primary key (chat_id, message_id)
+);
+
+create index if not exists chat_messages_chat_sent_at_idx
+on chat_messages (chat_id, sent_at);
+
+create table if not exists daily_summaries (
+  chat_id bigint not null,
+  day date not null,
+  text text not null,
+  created_at timestamptz not null default now(),
+  primary key (chat_id, day)
+);
+
 create table if not exists codeword_games (
   id bigserial primary key,
   chat_id bigint not null,
@@ -117,6 +144,69 @@ export const createPostgresDb = async (env = process.env) => {
       );
     },
 
+    async incrementMessageCount(chatId, userId) {
+      await query(
+        `
+        insert into message_counts (chat_id, user_id, count)
+        values ($1, $2, 1)
+        on conflict (chat_id, user_id) do update set
+          count = message_counts.count + 1
+        `,
+        [chatId, userId]
+      );
+    },
+
+    async storeChatMessage(message) {
+      const text = String(message.text || message.caption || '').trim();
+      if (!text || !message.chat?.id || !message.message_id) return;
+      await query(
+        `
+        insert into chat_messages (chat_id, message_id, user_id, text, sent_at)
+        values ($1, $2, $3, $4, to_timestamp($5))
+        on conflict (chat_id, message_id) do update set
+          user_id = excluded.user_id,
+          text = excluded.text,
+          sent_at = excluded.sent_at
+        `,
+        [message.chat.id, message.message_id, message.from?.id || null, text, message.date || Math.floor(Date.now() / 1000)]
+      );
+    },
+
+    async messagesForDay(chatId, day) {
+      const result = await query(
+        `
+        select message_id, user_id, text
+        from chat_messages
+        where chat_id = $1
+          and (sent_at at time zone 'Asia/Almaty')::date = $2::date
+        order by message_id
+        `,
+        [chatId, day]
+      );
+      return result.rows;
+    },
+
+    async dailySummary(chatId, day) {
+      const result = await query(
+        'select text from daily_summaries where chat_id = $1 and day = $2::date',
+        [chatId, day]
+      );
+      return result.rows[0]?.text || null;
+    },
+
+    async saveDailySummary(chatId, day, text) {
+      await query(
+        `
+        insert into daily_summaries (chat_id, day, text)
+        values ($1, $2::date, $3)
+        on conflict (chat_id, day) do update set
+          text = excluded.text,
+          created_at = now()
+        `,
+        [chatId, day, text]
+      );
+    },
+
     async incrementWordCounts({ chatId, userId, date, counts }) {
       const entries = Array.from(counts.entries());
       if (!entries.length) return;
@@ -177,6 +267,26 @@ export const createPostgresDb = async (env = process.env) => {
         [chatId, words, days]
       );
       return new Map(result.rows.map((row) => [row.word, row]));
+    },
+
+    async topMessageSenders(chatId, limit = 10) {
+      const result = await query(
+        `
+        select
+          mc.user_id,
+          mc.count,
+          u.first_name,
+          u.last_name,
+          u.username
+        from message_counts mc
+        left join users u on u.chat_id = mc.chat_id and u.user_id = mc.user_id
+        where mc.chat_id = $1
+        order by mc.count desc
+        limit $2
+        `,
+        [chatId, limit]
+      );
+      return result.rows;
     },
 
     async activeCodeword(chatId) {

@@ -24,6 +24,18 @@ const messagePayload = (message) => ({
   video: message.video
 });
 
+const dailySummaryDay = (message) => {
+  const match = String(message.text || message.caption || '').trim()
+    .match(/^#итогидня(?:\s+(\d{1,2}\.\d{1,2}\.\d{4}))?\s*$/iu);
+  if (!match) return null;
+  if (!match[1]) return undefined;
+
+  const [day, month, year] = match[1].split('.').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return 'invalid';
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+};
+
 const buildHelpText = (percentCommand = 'percent') => [
   'Короче, что я умею, сладкие:',
   '',
@@ -36,6 +48,8 @@ const buildHelpText = (percentCommand = 'percent') => [
   '',
   '/topwords — топ-5 слов за последние 14 дней, кто тут главный болтун',
   '/top — то же самое, но коротко, как твоя мотивация в понедельник',
+  '/spam — кто больше всех написал сообщений за всё время',
+  '#итогидня — краткий AI-итог сообщений за сегодня',
   '/pidor — выбираю подозреваемого дня, строго без бота, я не участвую в этом цирке',
   '/pidor_list — история выборов',
   '/pidor_reset — сбросить выбор на сегодня',
@@ -64,6 +78,7 @@ export const parseCommand = (message) => {
   const aliases = {
     'pidor:list': 'pidor_list',
     'pidor:reset': 'pidor_reset',
+    'spam:stats': 'spam_stats',
     'codeword:hint': 'codeword_hint',
     'codeword:stats': 'codeword_stats',
     'codeword:stop': 'codeword_stop',
@@ -83,7 +98,8 @@ export const createBotApp = ({
   analytics,
   mediaDownloader,
   birthdays,
-  percentGame
+  percentGame,
+  dailySummary
 } = {}) => {
   const token = env.BOT_TOKEN;
   const allowedChatIds = parseAllowedChatIds(env);
@@ -174,6 +190,22 @@ export const createBotApp = ({
   const sendMessages = async (chatId, texts, replyToMessageId) => {
     for (const [index, text] of texts.entries()) {
       await sendMessage(chatId, text, index === 0 ? replyToMessageId : undefined);
+    }
+  };
+
+  const sendLongMessage = async (chatId, text, replyToMessageId, extra = {}) => {
+    const chunks = [];
+    let remaining = text;
+    while (remaining.length > 4096) {
+      const boundary = Math.max(remaining.lastIndexOf('\n', 4000), remaining.lastIndexOf(' ', 4000));
+      const index = boundary > 0 ? boundary : 4000;
+      chunks.push(remaining.slice(0, index));
+      remaining = remaining.slice(index).trimStart();
+    }
+    chunks.push(remaining);
+
+    for (const [index, chunk] of chunks.entries()) {
+      await sendMessage(chatId, chunk, index === 0 ? replyToMessageId : undefined, extra);
     }
   };
 
@@ -328,6 +360,10 @@ export const createBotApp = ({
       await sendMessage(chatId, await analytics.topWordsText(chatId), message.message_id);
       return true;
     }
+    if (command.name === 'spam' || command.name === 'spam_stats') {
+      await sendMessage(chatId, await analytics.spamStatsText(chatId), message.message_id);
+      return true;
+    }
     if (command.name === 'pidor') {
       await analytics.ingestMessage(message);
       await sendMessages(chatId, await analytics.pidorOfDayMessages(chatId, botId), message.message_id);
@@ -398,6 +434,20 @@ export const createBotApp = ({
     }
 
     await cacheMessage(message);
+    const summaryDay = dailySummaryDay(message);
+    if (summaryDay === 'invalid') {
+      await sendMessage(message.chat.id, 'Дата должна быть настоящей: `#итогидня 24.07.2026`.', message.message_id, { parse_mode: 'Markdown' });
+      return;
+    }
+    if (summaryDay !== null) {
+      if (!dailySummary) {
+        await sendMessage(message.chat.id, 'Итоги дня пока не настроены. Нужны PostgreSQL и OPENAI_API_KEY.', message.message_id);
+        return;
+      }
+      const text = await dailySummary.summaryText(message.chat.id, summaryDay);
+      await sendLongMessage(message.chat.id, text, message.message_id, { disable_web_page_preview: true });
+      return;
+    }
     const command = parseCommand(message);
 
     if (!command) {
