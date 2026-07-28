@@ -1,4 +1,5 @@
 import { createQuoteRenderer } from '../render/quote.js';
+import { buildMentionMessages, findMentionableUsers } from './mentions.js';
 
 const cacheTtlSeconds = 60 * 60 * 24 * 90;
 const cacheLimit = 10000;
@@ -45,6 +46,7 @@ const buildHelpText = (percentCommand = 'percent') => [
   '/q 2 ... /q 10 — беру несколько сообщений подряд, без этой вашей хуйни',
   '/qs — сохраняю цитату из /q в стикерпак группы',
   '/qd — удаляю стикер из пака, если ответить на него',
+  '/all — зову всех известных мне участников чата, кроме ботов',
   '',
   '/topwords — топ-5 слов за последние 14 дней, кто тут главный болтун',
   '/top — то же самое, но коротко, как твоя мотивация в понедельник',
@@ -209,6 +211,56 @@ export const createBotApp = ({
     }
   };
 
+  const handleAllCommand = async (message) => {
+    const chatId = message.chat.id;
+    if (!['group', 'supergroup'].includes(message.chat.type)) {
+      await sendMessage(chatId, '/all работает только в групповом чате.', message.message_id);
+      return;
+    }
+
+    const knownRows = await analytics?.knownUsers?.(chatId);
+    if (!knownRows) {
+      await sendMessage(
+        chatId,
+        'Для /all нужен PostgreSQL: без него мне негде хранить список участников чата.',
+        message.message_id
+      );
+      return;
+    }
+
+    const knownUsers = knownRows.map((row) => ({
+      id: row.user_id,
+      first_name: row.first_name,
+      last_name: row.last_name,
+      username: row.username
+    }));
+    const users = await findMentionableUsers({
+      api,
+      chatId,
+      knownUsers,
+      onError: (method, details, error) => {
+        console.error(`${method} failed`, { ...details, error: error.message });
+      }
+    });
+    users.sort((left, right) => String(left.id).localeCompare(String(right.id), 'en', { numeric: true }));
+
+    const mentionMessages = buildMentionMessages(users);
+    if (!mentionMessages.length) {
+      await sendMessage(
+        chatId,
+        'Не нашёл ни одного живого участника. Если я не админ, Telegram может не дать мне проверить состав чата.',
+        message.message_id
+      );
+      return;
+    }
+
+    for (const [index, mention] of mentionMessages.entries()) {
+      await sendMessage(chatId, mention.text, index === 0 ? message.message_id : undefined, {
+        entities: mention.entities
+      });
+    }
+  };
+
   const sendQuote = async (chatId, commandMessage, messages) => {
     const sticker = await quoteRenderer.renderStickerWebp(messages);
     await sendBuffer('sendSticker', chatId, 'sticker', 'quote.webp', sticker, {
@@ -365,7 +417,6 @@ export const createBotApp = ({
       return true;
     }
     if (command.name === 'pidor') {
-      await analytics.ingestMessage(message);
       await sendMessages(chatId, await analytics.pidorOfDayMessages(chatId, botId), message.message_id);
       return true;
     }
@@ -458,6 +509,8 @@ export const createBotApp = ({
       return;
     }
 
+    await analytics?.rememberParticipants?.(message);
+
     if (['q', 'qs', 'qd'].includes(command.name)) {
       await handleQuoteCommand(message, command);
       return;
@@ -465,6 +518,11 @@ export const createBotApp = ({
 
     if (percentGame && command.name === percentGame.command) {
       await sendMessage(message.chat.id, await percentGame.playText(message, command.args), message.message_id);
+      return;
+    }
+
+    if (command.name === 'all') {
+      await handleAllCommand(message);
       return;
     }
 
