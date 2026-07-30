@@ -1,4 +1,12 @@
 import { createQuoteRenderer } from '../render/quote.js';
+import { createDemotivationRenderer } from '../render/demotivation.js';
+import { createStickerRenderer } from '../render/sticker.js';
+import {
+  maxDemotivationTextLength,
+  normalizeDemotivationText,
+  replyImageFileId
+} from '../demotivation/service.js';
+import { replyPhotoFileId } from '../sticker/service.js';
 import { buildMentionMessages, findMentionableUsers } from './mentions.js';
 
 const cacheTtlSeconds = 60 * 60 * 24 * 90;
@@ -44,8 +52,9 @@ const buildHelpText = (percentCommand = 'percent') => [
   '',
   '/q — делаю цитату-стикер из сообщения, на которое ты ответил',
   '/q 2 ... /q 10 — беру несколько сообщений подряд, без этой вашей хуйни',
-  '/qs — сохраняю цитату из /q в стикерпак группы',
+  '/qs — сохраняю цитату из /q или фото в стикерпак группы',
   '/qd — удаляю стикер из пака, если ответить на него',
+  '/demotivation <текст> — делаю демотиватор из изображения в reply',
   '/all — зову всех известных мне участников чата, кроме ботов',
   '',
   '/topwords — топ-5 слов за последние 14 дней, кто тут главный болтун',
@@ -172,6 +181,8 @@ export const createBotApp = ({
   };
 
   const quoteRenderer = createQuoteRenderer({ api, downloadTelegramFile });
+  const demotivationRenderer = createDemotivationRenderer();
+  const stickerRenderer = createStickerRenderer();
 
   const sendBuffer = async (method, chatId, fieldName, filename, buffer, extra = {}) => {
     const form = new FormData();
@@ -261,6 +272,57 @@ export const createBotApp = ({
     }
   };
 
+  const handleDemotivationCommand = async (message, command) => {
+    const chatId = message.chat.id;
+    const text = normalizeDemotivationText(command.args);
+    if (!text) {
+      await sendMessage(
+        chatId,
+        'Добавь текст после команды: `/demotivation Хьюстон, у нас проблемы`.',
+        message.message_id,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    if (Array.from(text).length > maxDemotivationTextLength) {
+      await sendMessage(
+        chatId,
+        `Текст слишком длинный. Максимум ${maxDemotivationTextLength} символов, иначе получится не демотиватор, а дипломная работа.`,
+        message.message_id
+      );
+      return;
+    }
+
+    const fileId = replyImageFileId(message.reply_to_message);
+    if (!fileId) {
+      await sendMessage(
+        chatId,
+        'Ответь командой на фото, картинку-файл или статический стикер. Из воздуха рамку не заполню.',
+        message.message_id
+      );
+      return;
+    }
+
+    try {
+      await api('sendChatAction', { chat_id: chatId, action: 'upload_photo' });
+      const rendered = await demotivationRenderer.renderJpeg(
+        await downloadTelegramFile(fileId),
+        text
+      );
+      await sendBuffer('sendPhoto', chatId, 'photo', 'demotivation.jpg', rendered, {
+        reply_to_message_id: message.message_id
+      });
+    } catch (error) {
+      console.error('demotivation render failed', { chatId, fileId, error });
+      await sendMessage(
+        chatId,
+        'Не смог собрать демотиватор из этой картинки. Попробуй другое изображение.',
+        message.message_id
+      );
+    }
+  };
+
   const sendQuote = async (chatId, commandMessage, messages) => {
     const sticker = await quoteRenderer.renderStickerWebp(messages);
     await sendBuffer('sendSticker', chatId, 'sticker', 'quote.webp', sticker, {
@@ -312,8 +374,8 @@ export const createBotApp = ({
     const form = new FormData();
     form.append('user_id', String(ownerUserId));
     form.append('name', stickerSetName);
-    form.append('sticker', stickerInputFormValue('quote_file'));
-    form.append('quote_file', new Blob([sticker]), 'quote.webp');
+    form.append('sticker', stickerInputFormValue('sticker_file'));
+    form.append('sticker_file', new Blob([sticker]), 'sticker.webp');
 
     try {
       await api('addStickerToSet', form, { formData: true });
@@ -339,7 +401,7 @@ export const createBotApp = ({
         emoji_list: ['💬'],
         format: 'static'
       }]));
-      createForm.append('sticker', new Blob([sticker]), 'quote.webp');
+      createForm.append('sticker', new Blob([sticker]), 'sticker.webp');
       await api('createNewStickerSet', createForm, { formData: true });
     }
 
@@ -353,10 +415,32 @@ export const createBotApp = ({
 
   const saveQuotedSticker = async (chatId, fromUserId, commandMessage) => {
     const reply = commandMessage.reply_to_message;
+    const photoFileId = replyPhotoFileId(reply);
+
+    if (photoFileId) {
+      let photoSticker;
+      try {
+        photoSticker = await stickerRenderer.renderPhotoWebp(
+          await downloadTelegramFile(photoFileId)
+        );
+      } catch (error) {
+        console.error('photo sticker render failed', { chatId, photoFileId, error });
+        await sendMessage(
+          chatId,
+          'Не смог превратить это фото в стикер. Попробуй другую фотографию.',
+          commandMessage.message_id
+        );
+        return;
+      }
+
+      await saveStickerBuffer(chatId, fromUserId, commandMessage, photoSticker);
+      return;
+    }
+
     const sticker = reply?.sticker;
 
     if (!sticker || reply.from?.id !== botId || sticker.is_animated || sticker.is_video) {
-      await sendMessage(chatId, 'Сначала сделай цитату через /q, потом ответь на МОЙ стикер командой /qs. Не усложняй, котик.', commandMessage.message_id);
+      await sendMessage(chatId, 'Ответь командой /qs на фотографию или на МОЙ статический стикер из /q. Не усложняй, котик.', commandMessage.message_id);
       return;
     }
 
@@ -513,6 +597,11 @@ export const createBotApp = ({
 
     if (['q', 'qs', 'qd'].includes(command.name)) {
       await handleQuoteCommand(message, command);
+      return;
+    }
+
+    if (command.name === 'demotivation') {
+      await handleDemotivationCommand(message, command);
       return;
     }
 
