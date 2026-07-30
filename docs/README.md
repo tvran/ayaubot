@@ -2,7 +2,7 @@
 
 AyauBot — Telegram-бот для групповых чатов. Он превращает сообщения в статические WebP-стикеры и демотиваторы, скачивает Instagram Reels и TikTok-видео, зовёт известных участников чата, ведёт статистику слов, запускает игры, напоминает о днях рождения и ежедневно выбирает случайного участника чата.
 
-Проект написан на Node.js в формате ES modules и может работать как Vercel Function или как обычный HTTP-сервер.
+Проект написан на Node.js в формате ES modules. Webhook работает как Vercel Function или обычный HTTP-сервер, а команды выполняет отдельный worker через надёжную PostgreSQL-очередь.
 
 ## Карта документации
 
@@ -11,6 +11,7 @@ AyauBot — Telegram-бот для групповых чатов. Он прев�
 | [Архитектура](architecture.md) | Границы компонентов, зависимости и основные потоки данных |
 | [Настройка и эксплуатация](setup-and-operations.md) | Переменные окружения, локальный запуск, webhook, Vercel и диагностика |
 | [Входные точки](components/entrypoints.md) | Vercel handler, Node.js HTTP-сервер и скрипт регистрации webhook |
+| [Webhook queue](components/webhook-queue.md) | Идемпотентность, lanes, retries, dead-letter и worker concurrency |
 | [Приложение бота](components/bot-app.md) | Разбор команд, Telegram Bot API, кеш сообщений и стикерпаки |
 | [Аналитика и игры](components/analytics.md) | Токенизация, статистика, кодовое слово и ежедневный выбор |
 | [Игра Percent](components/percent-game.md) | Настраиваемые параметры, шаблоны ответов и суточный Redis-кеш |
@@ -28,10 +29,12 @@ AyauBot — Telegram-бот для групповых чатов. Он прев�
 ```bash
 npm install
 cp .env.example .env
+npm run migrate
 npm start
+npm run worker
 ```
 
-Локальный сервер принимает обновления по `POST /telegram/webhook`, а Vercel-функция — по `POST /api/telegram`. Перед регистрацией webhook заполните как минимум `BOT_TOKEN`, `WEBHOOK_SECRET` и `APP_URL`, затем выполните:
+Локальный web-сервис принимает обновления по `POST /telegram/webhook`, а Vercel-функция — по `POST /api/telegram`. Оба только ставят update в PostgreSQL-очередь, поэтому `DATABASE_URL` и миграция обязательны. Перед регистрацией webhook заполните `BOT_TOKEN`, `WEBHOOK_SECRET` и `APP_URL`, затем выполните:
 
 ```bash
 npm run set-webhook
@@ -72,8 +75,14 @@ npm run set-webhook
 
 ```text
 api/telegram.js              Vercel webhook
+migrations/                  версионированные SQL-миграции
+scripts/migrate.js           применение PostgreSQL-миграций
 scripts/set-webhook.js       регистрация webhook в Telegram
-src/server/index.js          самостоятельный HTTP-сервер
+src/server/index.js          быстрый HTTP ingress
+src/worker/index.js          обработчик очереди и scheduler
+src/webhook/ingress.js       постановка Telegram update в очередь
+src/queue/                   PostgreSQL queue, классификация и worker loops
+src/observability/metrics.js внутренние Prometheus-метрики
 src/bot/app.js               оркестрация Telegram-команд
 src/bot/mentions.js          проверка участников и построение упоминаний
 src/analytics/tokenize.js    нормализация и токенизация текста

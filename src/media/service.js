@@ -54,12 +54,17 @@ export class MediaDownloadError extends Error {
   }
 }
 
-const runProcess = ({ executable, args, timeoutMs, spawnProcess }) =>
+const runProcess = ({ executable, args, timeoutMs, spawnProcess, signal }) =>
   new Promise((resolve, reject) => {
     let stderr = '';
     let settled = false;
     let child;
     let timer;
+
+    const abort = () => {
+      child?.kill('SIGKILL');
+      finish(() => reject(new MediaDownloadError('timeout', 'Загрузка видео отменена.')));
+    };
 
     try {
       child = spawnProcess(executable, args, {
@@ -74,6 +79,7 @@ const runProcess = ({ executable, args, timeoutMs, spawnProcess }) =>
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
       callback();
     };
 
@@ -94,6 +100,12 @@ const runProcess = ({ executable, args, timeoutMs, spawnProcess }) =>
         ));
       });
     });
+
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
+    signal?.addEventListener('abort', abort, { once: true });
 
     timer = setTimeout(() => {
       child.kill('SIGKILL');
@@ -124,7 +136,7 @@ export const createMediaDownloadService = ({ env = process.env, spawnProcess = s
   const urlsFromMessage = (message = {}) =>
     enabled ? extractSupportedVideoUrls(message.text || message.caption || '', maxLinks) : [];
 
-  const downloadVideo = async (url) => {
+  const downloadVideo = async (url, { signal } = {}) => {
     if (!enabled) throw new MediaDownloadError('disabled', 'Загрузка видео отключена.');
     if (!isSupportedVideoUrl(url)) throw new MediaDownloadError('unsupported_url', 'Ссылка не поддерживается.');
 
@@ -144,7 +156,7 @@ export const createMediaDownloadService = ({ env = process.env, spawnProcess = s
       if (cookiesFile) args.push('--cookies', cookiesFile);
       args.push('--', url);
 
-      await runProcess({ executable, args, timeoutMs, spawnProcess });
+      await runProcess({ executable, args, timeoutMs, spawnProcess, signal });
       const file = await downloadedFile(directory);
       if (file.size > maxBytes) {
         throw new MediaDownloadError('file_too_large', `Видео больше лимита ${maxBytes} байт.`);

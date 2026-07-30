@@ -16,8 +16,11 @@ await createPostgresDb(env = process.env)
 - SSL выключен только при `PGSSLMODE=disable`;
 - иначе SSL включён с `rejectUnauthorized: false`;
 - максимум соединений: `PG_POOL_SIZE` либо 5.
+- таймаут подключения: `PG_CONNECT_TIMEOUT_MS`, по умолчанию 5 секунд;
+- statement timeout: `PG_STATEMENT_TIMEOUT_MS`, по умолчанию 15 секунд;
+- client query timeout: `PG_QUERY_TIMEOUT_MS`, по умолчанию 20 секунд.
 
-Adapter возвращает публичное поле `pool`, но штатный код его напрямую не использует и не вызывает `pool.end()`.
+Adapter возвращает публичное поле `pool` для queue/lease adapters и метод `close()` для корректного shutdown постоянных процессов.
 
 ## Таблица `users`
 
@@ -94,6 +97,12 @@ Adapter возвращает публичное поле `pool`, но штатн
 
 ## Миграции и хранение
 
-Схема идемпотентно создаёт отсутствующие объекты, но не умеет изменять существующие столбцы. Версий миграций нет. Также нет foreign key, check constraint для статусов, retention policy или очистки старых агрегатов.
+Базовая историческая схема по-прежнему идемпотентно создаёт отсутствующие объекты при старте. Новые production-изменения выполняются версионированными SQL-файлами из `migrations/` через `npm run migrate`. `schema_migrations` хранит checksum и запрещает незаметно переписать применённую миграцию.
 
-Для production-изменений схемы следует ввести отдельные миграции и не полагаться только на `CREATE IF NOT EXISTS`.
+## Очередь и leases
+
+`telegram_update_jobs` хранит идемпотентную очередь по `update_id`, lane, status, attempts и timestamps. Частичные индексы ускоряют выбор готовых задач и проверку более старых update того же чата. Completed payload очищается сразу, completed rows удаляются через 7 дней; dead-letter по умолчанию хранится 30 дней.
+
+`telegram_chat_job_locks` содержит краткоживущую аренду chat ID и гарантирует последовательность внутри одного чата при нескольких worker loops или replicas.
+
+`scheduler_leases` реализует singleton-запуск периодических задач. Birthday delivery markers остаются отдельной гарантией идемпотентности конкретного уведомления.

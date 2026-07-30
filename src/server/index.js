@@ -1,81 +1,27 @@
-import { createServer } from 'node:http';
-import { Redis } from '@upstash/redis';
-import { createAnalyticsService } from '../analytics/service.js';
-import { createBirthdayService } from '../birthday/service.js';
-import { createBotApp } from '../bot/app.js';
-import { createDemotivationFrameExtractor } from '../demotivation/frame.js';
 import { createPostgresDb } from '../db/postgres.js';
-import { createMediaDownloadService } from '../media/service.js';
-import { createPercentGameService } from '../games/percent.js';
-import { createDailySummaryService } from '../summary/service.js';
+import { createMetrics, startEventLoopLagMonitor } from '../observability/metrics.js';
+import { createPostgresUpdateQueue } from '../queue/postgres.js';
+import { createWebhookIngress } from '../webhook/ingress.js';
+import { createWebhookHttpServer } from './http.js';
 
 const port = Number(process.env.PORT || 3000);
-const webhookSecret = process.env.WEBHOOK_SECRET;
-const redis = process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
-  ? Redis.fromEnv()
-  : null;
 const db = await createPostgresDb();
-const analytics = createAnalyticsService({ db });
-const birthdays = createBirthdayService({ db });
-const mediaDownloader = createMediaDownloadService();
-const demotivationFrameExtractor = createDemotivationFrameExtractor();
-const percentGame = createPercentGameService({ redis });
-const dailySummary = createDailySummaryService({ db });
-const bot = createBotApp({
-  redis,
-  analytics,
-  mediaDownloader,
-  demotivationFrameExtractor,
-  birthdays,
-  percentGame,
-  dailySummary
-});
-
-birthdays.startScheduler({
-  sendMessage: (chatId, text, extra = {}) => bot.api('sendMessage', {
-    chat_id: chatId,
-    text,
-    ...extra
-  })
-});
-
-const readJson = async (request) => {
-  const chunks = [];
-  for await (const chunk of request) chunks.push(chunk);
-  if (!chunks.length) return {};
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
-};
-
-const sendJson = (response, status, body) => {
-  response.writeHead(status, { 'content-type': 'application/json' });
-  response.end(JSON.stringify(body));
-};
-
-const server = createServer(async (request, response) => {
-  try {
-    if (request.method === 'GET' && request.url === '/health') {
-      sendJson(response, 200, { ok: true });
-      return;
-    }
-
-    if (request.method !== 'POST' || request.url !== '/telegram/webhook') {
-      sendJson(response, 404, { ok: false });
-      return;
-    }
-
-    if (webhookSecret && request.headers['x-telegram-bot-api-secret-token'] !== webhookSecret) {
-      sendJson(response, 401, { ok: false });
-      return;
-    }
-
-    await bot.handleUpdate(await readJson(request));
-    sendJson(response, 200, { ok: true });
-  } catch (error) {
-    console.error(error);
-    sendJson(response, 200, { ok: true });
-  }
-});
+const queue = createPostgresUpdateQueue({ pool: db?.pool });
+const metrics = createMetrics();
+const stopLagMonitor = startEventLoopLagMonitor({ metrics });
+const ingress = createWebhookIngress({ queue, metrics });
+const server = createWebhookHttpServer({ ingress, queue, metrics });
 
 server.listen(port, () => {
-  console.log(`Ayau bot listening on ${port}`);
+  console.log(`Ayau webhook ingress listening on ${port}`);
 });
+
+const shutdown = async (signal) => {
+  console.log('webhook ingress shutting down', { signal });
+  stopLagMonitor();
+  await new Promise((resolve) => server.close(resolve));
+  await db?.close();
+};
+
+process.once('SIGTERM', () => void shutdown('SIGTERM'));
+process.once('SIGINT', () => void shutdown('SIGINT'));

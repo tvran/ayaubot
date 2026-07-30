@@ -19,17 +19,23 @@ export class FrameExtractionError extends Error {
   }
 }
 
-const runFfmpeg = ({ executable, args, timeoutMs, spawnProcess }) =>
+const runFfmpeg = ({ executable, args, timeoutMs, spawnProcess, signal }) =>
   new Promise((resolve, reject) => {
     let child;
     let stderr = '';
     let settled = false;
     let timer;
 
+    const abort = () => {
+      child?.kill('SIGKILL');
+      finish(() => reject(new FrameExtractionError('timeout', 'Извлечение кадра отменено.')));
+    };
+
     const finish = (callback) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
       callback();
     };
 
@@ -61,6 +67,12 @@ const runFfmpeg = ({ executable, args, timeoutMs, spawnProcess }) =>
       });
     });
 
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
+    signal?.addEventListener('abort', abort, { once: true });
+
     timer = setTimeout(() => {
       child.kill('SIGKILL');
       finish(() => reject(new FrameExtractionError(
@@ -77,7 +89,7 @@ export const createDemotivationFrameExtractor = ({
   const executable = env.FFMPEG_PATH || 'ffmpeg';
   const timeoutMs = positiveNumber(env.DEMOTIVATION_FRAME_TIMEOUT_MS, defaultTimeoutMs);
 
-  const extractFirstFrame = async (videoBuffer) => {
+  const extractFirstFrame = async (videoBuffer, { signal } = {}) => {
     if (!Buffer.isBuffer(videoBuffer) || videoBuffer.length === 0) {
       throw new TypeError('videoBuffer must be a non-empty Buffer');
     }
@@ -97,7 +109,7 @@ export const createDemotivationFrameExtractor = ({
         '-q:v', '2',
         outputPath
       ];
-      await runFfmpeg({ executable, args, timeoutMs, spawnProcess });
+      await runFfmpeg({ executable, args, timeoutMs, spawnProcess, signal });
 
       try {
         return await readFile(outputPath);

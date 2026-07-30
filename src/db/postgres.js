@@ -106,6 +106,11 @@ create table if not exists birthday_notifications (
 
 const dayString = (date) => date.toISOString().slice(0, 10);
 
+const positiveInteger = (value, fallback) => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+};
+
 export const createPostgresDb = async (env = process.env) => {
   if (!env.DATABASE_URL) return null;
 
@@ -119,7 +124,11 @@ export const createPostgresDb = async (env = process.env) => {
   const pool = new Pool({
     connectionString: env.DATABASE_URL,
     ssl: env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false },
-    max: Number(env.PG_POOL_SIZE || 5)
+    max: positiveInteger(env.PG_POOL_SIZE, 5),
+    connectionTimeoutMillis: positiveInteger(env.PG_CONNECT_TIMEOUT_MS, 5_000),
+    idleTimeoutMillis: positiveInteger(env.PG_IDLE_TIMEOUT_MS, 30_000),
+    statement_timeout: positiveInteger(env.PG_STATEMENT_TIMEOUT_MS, 15_000),
+    query_timeout: positiveInteger(env.PG_QUERY_TIMEOUT_MS, 20_000)
   });
 
   await pool.query(schema);
@@ -128,6 +137,10 @@ export const createPostgresDb = async (env = process.env) => {
 
   return {
     pool,
+
+    async close() {
+      await pool.end();
+    },
 
     async upsertUser(chatId, user) {
       await query(

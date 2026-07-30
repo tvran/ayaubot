@@ -145,3 +145,33 @@ test('scheduler waits until the configured local hour', async () => {
   assert.deepEqual(result, { sent: 0, skipped: 'before_check_hour' });
   assert.equal(queried, false);
 });
+
+test('scheduler delegates each tick to a distributed lease', async () => {
+  const db = {
+    async birthdaysForDate() { return []; },
+    async deleteBirthdayNotificationsBefore() {}
+  };
+  const service = createBirthdayService({
+    db,
+    env: {
+      BIRTHDAY_TIME_ZONE: 'UTC',
+      BIRTHDAY_CHECK_HOUR: '0',
+      BIRTHDAY_CHECK_INTERVAL_MS: '60000'
+    },
+    now: () => new Date('2026-07-30T12:00:00Z'),
+    logger: { log() {}, error() {} }
+  });
+  const leases = [];
+  const stop = service.startScheduler({
+    sendMessage: async () => {},
+    runExclusive: async (name, task) => {
+      leases.push(name);
+      return task();
+    }
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  stop();
+
+  assert.deepEqual(leases, ['birthday-notifications']);
+});

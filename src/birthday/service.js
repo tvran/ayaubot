@@ -293,14 +293,18 @@ export const createBirthdayService = ({ db, env = process.env, now = () => new D
     return { sent };
   };
 
-  const startScheduler = ({ sendMessage } = {}) => {
+  const startScheduler = ({ sendMessage, runExclusive } = {}) => {
     if (!db || !schedulerEnabled) return () => {};
     let running = false;
     const tick = async () => {
       if (running) return;
       running = true;
       try {
-        await runDueNotifications({ sendMessage });
+        if (runExclusive) {
+          await runExclusive('birthday-notifications', () => runDueNotifications({ sendMessage }));
+        } else {
+          await runDueNotifications({ sendMessage });
+        }
       } catch (error) {
         logger.error('birthday scheduler failed', error);
       } finally {

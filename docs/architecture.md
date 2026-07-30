@@ -7,29 +7,24 @@ Telegram
    │ HTTPS Update
    ▼
 Vercel handler ─┐
-                ├─► Bot App ─► Telegram Bot API
-Node HTTP server┘       │
-                       ├─► Redis: кеш сообщений и результатов `/percent`
-                       ├─► Percent Game
-                       ├─► Analytics Service ─► PostgreSQL
-                       ├─► Birthday Service ──► PostgreSQL
-                       ├─► Media Service ─► yt-dlp + ffmpeg
-                       ├─► Quote Renderer
-                       │      ├─► Telegram File API
-                       │      ├─► CDN с emoji
-                       │      └─► Satori + Sharp
-                       ├─► Photo Sticker Renderer ─► Sharp
-                       ├─► Demotivation Frame Extractor ─► ffmpeg
-                       └─► Demotivation Renderer ─► Satori + Sharp
+                ├─► PostgreSQL update queue ─► Queue Worker ─► Bot App ─► Telegram Bot API
+Node HTTP server┘                                  │               │
+                                                  │               ├─► Redis: кеш сообщений и `/percent`
+                                                  │               ├─► Analytics/Birthday ─► PostgreSQL
+                                                  │               ├─► Media Service ─► yt-dlp + ffmpeg
+                                                  │               └─► Satori + Sharp renderers
+                                                  └─► retries, DLQ, per-chat leases
 ```
 
-Обе входные точки один раз при загрузке модуля создают PostgreSQL-подключение, сервис аналитики, Media Service и приложение бота. Обработчик конкретного HTTP-запроса передаёт Telegram Update в `bot.handleUpdate()`.
+Обе входные точки создают только PostgreSQL queue и ingress. HTTP-запрос заканчивается после идемпотентного INSERT. Отдельный постоянный worker создаёт Bot App, Redis и тяжёлые зависимости, забирает задачи с ограниченной конкурентностью и сохраняет порядок по chat ID.
 
 ## Компоненты и ответственность
 
 | Компонент          | Файлы                                    | Ответственность                                                 |
 | ------------------ | ---------------------------------------- | --------------------------------------------------------------- |
-| Входные точки      | `api/telegram.js`, `src/server/index.js` | HTTP-маршрутизация, проверка секрета, сборка зависимостей       |
+| Входные точки      | `api/telegram.js`, `src/server/index.js` | HTTP-маршрутизация, проверка секрета, enqueue и быстрый ACK     |
+| Queue              | `src/queue/*`, `src/webhook/ingress.js`  | Deduplication, lanes, leases, retries и dead-letter             |
+| Worker             | `src/worker/index.js`                    | Bot runtime, очередь, scheduler, health и metrics               |
 | Bot App            | `src/bot/app.js`                         | Допуск чатов, команды, Telegram API, Redis timeline, стикерпаки |
 | Analytics Service  | `src/analytics/service.js`               | Пользовательские сценарии статистики и игр                      |
 | Birthday Service   | `src/birthday/service.js`                | Регистрация дат, календарь и фоновые уведомления                |
@@ -46,16 +41,15 @@ Node HTTP server┘       │
 
 ## Поток обработки Update
 
-1. Входная точка принимает JSON и при заданном `WEBHOOK_SECRET` проверяет заголовок `x-telegram-bot-api-secret-token`.
-2. `handleUpdate` выбирает `message` или `edited_message`. Остальные типы обновлений игнорируются.
-3. Сообщения из чатов вне allowlist игнорируются до кеширования и аналитики.
-4. Допущенное сообщение сохраняется в Redis timeline, если Redis настроен.
-5. Если текст не распознан как команда, сервис обновляет статистику, проверяет угадывание кодового слова и обрабатывает Reels/TikTok URL.
-6. Автор любой команды сохраняется в реестре пользователей без учёта слов.
-7. `/q`, `/qs` и `/qd` направляются в подсистему цитат; `/demotivation` — в renderer демотиваторов; `/percent` — в Percent Game; `/all` — в подсистему упоминаний; команды дней рождения — в Birthday Service; остальные известные команды — в аналитику.
-8. Неизвестная команда не получает ответа и не попадает в статистику слов.
+1. Входная точка проверяет webhook secret и валидирует `update_id`/chat ID.
+2. Update классифицируется как `default` или `heavy` и вставляется в `telegram_update_jobs`; duplicate ID не создаёт вторую задачу.
+3. Telegram получает HTTP 200 сразу после фиксации в PostgreSQL.
+4. Worker арендует самый старый доступный update, одновременно захватывая lease чата.
+5. `handleUpdate` проверяет allowlist, сохраняет Redis timeline одним pipeline и выполняет команду.
+6. Успех переводит задачу в `completed`; ошибка получает retry с exponential backoff, а после лимита — `dead`.
+7. Heartbeat продлевает lease. После падения worker просроченная задача автоматически возвращается в обработку.
 
-Входные точки намеренно отвечают HTTP 200 даже при внутренней ошибке обработки. Это предотвращает бесконечные повторы Telegram, но означает, что потерянное обновление можно обнаружить только по логам.
+Входные точки по проектному контракту отвечают 200 и при ошибке enqueue. Такая ошибка видна в логах/метриках, но update будет потерян; штатные ошибки уже зафиксированной задачи обрабатываются worker retries.
 
 ## Поток создания цитаты
 
@@ -93,17 +87,18 @@ Media Service извлекает из text/caption до трёх уникаль�
 
 ## Поток дней рождения
 
-Команда `/birthday` сохраняет дату и профиль автора в PostgreSQL для конкретного чата. Постоянный Node.js-сервер запускает interval-проверку календаря: после заданного локального часа поздравляет сегодняшних именинников в группе и рассылает другим зарегистрированным участникам личные напоминания о завтрашних. Таблица delivery markers делает повторные ticks идемпотентными.
+Команда `/birthday` сохраняет дату и профиль автора в PostgreSQL для конкретного чата. Worker запускает interval-проверку календаря через PostgreSQL `scheduler_leases`: только одна replica выполняет tick. После заданного локального часа сервис поздравляет сегодняшних именинников и рассылает напоминания. Delivery markers остаются вторым уровнем идемпотентности.
 
 ## Границы состояния
 
-- Процесс Node.js хранит только кеш загруженных emoji (`Map`) и созданные объекты сервисов.
+- Web-процесс хранит только метрики; worker также хранит кеш emoji, rate-limit buckets и созданные сервисы.
+- PostgreSQL queue временно хранит полные pending/retry/dead updates. Payload completed-задачи очищается сразу.
 - Redis хранит сокращённые Telegram-сообщения 90 дней, timeline максимум из 10 000 записей и результаты `/percent` с настраиваемым TTL (по умолчанию 24 часа).
 - PostgreSQL хранит известные профили для `/all` и аналитики, агрегаты слов, игры, ежедневные выборы, дни рождения и markers отправленных уведомлений. Старые birthday markers очищаются через 400 дней.
 - Telegram хранит исходные файлы и стикерпаки.
 - Временная директория ОС кратковременно хранит загружаемые видео; после каждого вызова она рекурсивно очищается.
 
-Отсутствие Redis не мешает аналитике, но `/q` не сможет получить даже ответное сообщение, а `/percent` вернёт сообщение о недоступном суточном хранении. Отсутствие PostgreSQL отключает хранение данных, аналитические команды и `/all`.
+Отсутствие Redis не мешает очереди и аналитике: circuit breaker быстро отключает кеш, `/q` не сможет получить timeline, а `/percent` вернёт сообщение о недоступном хранилище. PostgreSQL обязателен для webhook queue и worker.
 
 ## Внешние зависимости
 
@@ -117,8 +112,9 @@ Media Service извлекает из text/caption до трёх уникаль�
 
 ## Существенные ограничения текущей реализации
 
-- Автоматические тесты покрывают Percent Game, URL-фильтр, базовый lifecycle Media Service, разбор дат и idempotency планировщика дней рождения. `npm run lint` выполняет только синтаксическую проверку файлов.
-- У API Telegram, загрузки файлов и CDN emoji нет таймаутов или повторов.
+- Автоматические тесты покрывают классификацию/enqueue, worker success/timeout/DLQ, rate limit, Redis circuit, Percent Game, media, даты и scheduler lease. `npm run lint` выполняет только синтаксическую проверку файлов.
+- Telegram API, Telegram File API, OpenAI, PostgreSQL, Redis, emoji CDN, yt-dlp и ffmpeg ограничены таймаутами; Apple emoji и Twemoji остаются независимыми fallback.
+- Очередь даёт at-least-once: ошибка после частично успешного внешнего вызова может повторить этот побочный эффект.
 - Одновременные вызовы ежедневного выбора могут вернуть разным запросам разных кандидатов: вставка защищена `ON CONFLICT`, но проигравший запрос не перечитывает сохранённую строку.
 - Одновременные угадывания кодового слова могут сформировать несколько победных ответов, поскольку результат условного `UPDATE` не проверяется.
 - Только ошибка `addStickerToSet`, похожая на отсутствие набора, запускает `createNewStickerSet`; остальные причины логируются и возвращаются пользователю как общий отказ.

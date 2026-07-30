@@ -8,18 +8,22 @@
 createBotApp({
   env = process.env,
   redis,
+  redisGateway,
   analytics,
   mediaDownloader,
   demotivationFrameExtractor,
   birthdays,
-  percentGame
+  percentGame,
+  dailySummary,
+  rateLimiter,
+  metrics
 })
 // → { api, chatAllowed, handleUpdate }
 ```
 
-- `api(method, payload, options)` вызывает метод Telegram Bot API и возвращает `result`; при `ok: false` бросает ошибку.
+- `api(method, payload, options)` вызывает Telegram Bot API с таймаутом, метриками и ограниченными повторами для 429/5xx; при финальном `ok: false` бросает ошибку.
 - `chatAllowed(chatId)` проверяет allowlist. Пустой список разрешает любой chat ID.
-- `handleUpdate(update)` — главный обработчик Telegram Update.
+- `handleUpdate(update, { signal, lane })` — главный обработчик worker-задачи; abort signal проходит в сетевые и media-операции.
 
 `BOT_TOKEN` читается из `env`. Отдельной ранней проверки токена нет: при отсутствии значения приложение создаст URL с `undefined`, а ошибка проявится на первом API-вызове. Числовой префикс токена используется как `botId`, чтобы исключить самого бота из ежедневного выбора и проверить автора стикера для `/qs`.
 
@@ -46,7 +50,7 @@ parseCommand(message)
 Порядок действий:
 
 1. проверить chat allowlist;
-2. сохранить сообщение в Redis;
+2. сохранить сообщение в Redis одним pipeline; ошибка открывает circuit breaker и не останавливает команду;
 3. разобрать команду;
 4. для обычного сообщения — записать аналитику, проверить кодовое слово и обработать media URL;
 5. для команды — сохранить профиль автора без учёта слов;
@@ -55,7 +59,20 @@ parseCommand(message)
 8. команды дней рождения передать в Birthday Service;
 9. для остальных команд — обратиться к Analytics Service.
 
+Перед выполнением команды применяется per-user/per-chat rate limit. Обычные команды и heavy-задачи имеют независимые лимиты. Для сообщения с media URL аналитика сохраняется до проверки heavy-limit, но сама загрузка может быть отклонена.
+
 Неизвестные команды молча игнорируются, но профиль автора сохраняется в `users`. Текст любых команд не входит в статистику слов.
+
+## Таймауты и деградация
+
+- JSON Telegram API: `TELEGRAM_API_TIMEOUT_MS`, по умолчанию 15 секунд;
+- multipart upload: `TELEGRAM_UPLOAD_TIMEOUT_MS`, по умолчанию 120 секунд;
+- Telegram File API: `TELEGRAM_FILE_TIMEOUT_MS`, по умолчанию 30 секунд;
+- Redis REST: `REDIS_TIMEOUT_MS`, по умолчанию 1 секунда;
+- после ошибки Redis circuit открывается на `REDIS_CIRCUIT_OPEN_MS`, по умолчанию 30 секунд;
+- `cacheMessage` объединяет SET/LPUSH/LTRIM/EXPIRE в один Upstash pipeline, а чтение цитаты использует MGET.
+
+Ошибки Redis дают функциональную деградацию `/q` и `/percent`, но не заставляют worker повторять весь Telegram update.
 
 ## Демотиватор: `/demotivation <текст>`
 

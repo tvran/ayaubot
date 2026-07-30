@@ -76,6 +76,7 @@ export const loadPercentGameConfig = (url = defaultConfigUrl) => {
 
 export const createPercentGameService = ({
   redis,
+  redisGateway,
   config = loadPercentGameConfig(),
   random = Math.random
 } = {}) => {
@@ -99,23 +100,32 @@ export const createPercentGameService = ({
     if (!user?.id) return messageFromTemplate('missingPlayer');
 
     const key = `${resultKeyPrefix}:${user.id}:${encodeURIComponent(parameter.name)}`;
-    let result = cachedResult(await redis.get(key));
-
-    if (!result) {
-      const percent = Math.min(100, Math.max(0, Math.floor(random() * 101)));
-      const phraseIndex = Math.min(
-        parameter.phrases.length - 1,
-        Math.max(0, Math.floor(random() * parameter.phrases.length))
-      );
-      const candidate = { percent, phrase: parameter.phrases[phraseIndex] };
-      const stored = await redis.set(key, candidate, { ex: config.ttlSeconds, nx: true });
-      result = stored ? candidate : cachedResult(await redis.get(key));
+    const calculate = async (client) => {
+      let result = cachedResult(await client.get(key));
 
       if (!result) {
-        await redis.set(key, candidate, { ex: config.ttlSeconds });
-        result = candidate;
+        const percent = Math.min(100, Math.max(0, Math.floor(random() * 101)));
+        const phraseIndex = Math.min(
+          parameter.phrases.length - 1,
+          Math.max(0, Math.floor(random() * parameter.phrases.length))
+        );
+        const candidate = { percent, phrase: parameter.phrases[phraseIndex] };
+        const stored = await client.set(key, candidate, { ex: config.ttlSeconds, nx: true });
+        result = stored ? candidate : cachedResult(await client.get(key));
+
+        if (!result) {
+          await client.set(key, candidate, { ex: config.ttlSeconds });
+          result = candidate;
+        }
       }
-    }
+
+      return result;
+    };
+
+    const result = redisGateway
+      ? await redisGateway.call('percent_game', calculate, null)
+      : await calculate(redis);
+    if (!result) return messageFromTemplate('storageUnavailable');
 
     return renderTemplate(result.phrase, {
       user: displayMention(user),

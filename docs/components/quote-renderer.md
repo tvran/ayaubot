@@ -36,7 +36,7 @@ await renderer.renderStickerWebp(messages); // Buffer WebP для Telegram
 
 Ссылки, mentions, spoilers и custom emoji специального оформления не имеют. Entity лишь влияет на стиль, текст остаётся исходным.
 
-Emoji сначала загружается как Apple PNG с jsDelivr. При неудаче используется Twemoji SVG. Успешные data URI кешируются в process-level `Map`; отрицательный результат не кешируется. Если оба запроса неуспешны, символ рендерится шрифтом.
+Emoji сначала загружается как Apple PNG с jsDelivr. При неудаче или таймауте `EMOJI_CDN_TIMEOUT_MS` используется Twemoji SVG с независимым таймаутом. Успешные data URI кешируются в process-level `Map`; отрицательный результат не кешируется. Если оба запроса неуспешны, символ рендерится шрифтом.
 
 ## Подбор ширины и перенос строк
 
