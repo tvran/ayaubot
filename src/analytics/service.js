@@ -19,9 +19,19 @@ const shortDate = (value) =>
 const notConfigured = 'Аналитика еще не настроена. База данных где-то в клубе, походу.';
 
 export const createAnalyticsService = ({ db } = {}) => {
+  const rememberParticipants = async (message) => {
+    if (!db || !message?.chat) return;
+    const users = [message.from, ...(message.new_chat_members || [])]
+      .filter((user) => user?.id && !user.is_bot);
+    const uniqueUsers = new Map(users.map((user) => [String(user.id), user]));
+
+    for (const user of uniqueUsers.values()) await db.upsertUser(message.chat.id, user);
+  };
+
   const ingestMessage = async (message) => {
-    if (!db || !message?.from || !message?.chat) return;
-    await db.upsertUser(message.chat.id, message.from);
+    if (!db || !message?.chat) return;
+    await rememberParticipants(message);
+    if (!message.from?.id || message.from.is_bot) return;
     await db.incrementMessageCount(message.chat.id, message.from.id);
     await db.storeChatMessage(message);
 
@@ -67,6 +77,11 @@ export const createAnalyticsService = ({ db } = {}) => {
       '',
       'Считаю по сообщениям с момента включения статистики. Кто сверху — тот не молчит, а ведет стендап без сцены.'
     ].join('\n');
+  };
+
+  const knownUsers = async (chatId) => {
+    if (!db) return null;
+    return db.usersForChat(chatId);
   };
 
   const ensureActiveCodeword = async (chatId) => {
@@ -188,7 +203,9 @@ export const createAnalyticsService = ({ db } = {}) => {
   };
 
   return {
+    rememberParticipants,
     ingestMessage,
+    knownUsers,
     topWordsText,
     spamStatsText,
     startCodewordText,

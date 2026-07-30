@@ -186,6 +186,19 @@ export const createPostgresDb = async (env = process.env) => {
       return result.rows;
     },
 
+    async usersForChat(chatId) {
+      const result = await query(
+        `
+        select user_id, first_name, last_name, username
+        from users
+        where chat_id = $1
+        order by updated_at desc, user_id
+        `,
+        [chatId]
+      );
+      return result.rows;
+    },
+
     async dailySummary(chatId, day) {
       const result = await query(
         'select text from daily_summaries where chat_id = $1 and day = $2::date',
