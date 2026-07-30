@@ -4,9 +4,9 @@ import { createStickerRenderer } from '../render/sticker.js';
 import {
   maxDemotivationTextLength,
   normalizeDemotivationText,
-  replyImageFileId
+  replyDemotivationSource
 } from '../demotivation/service.js';
-import { replyPhotoFileId } from '../sticker/service.js';
+import { replyPhotoFileId, staticStickerInput } from '../sticker/service.js';
 import { buildMentionMessages, findMentionableUsers } from './mentions.js';
 
 const cacheTtlSeconds = 60 * 60 * 24 * 90;
@@ -108,6 +108,7 @@ export const createBotApp = ({
   redis,
   analytics,
   mediaDownloader,
+  demotivationFrameExtractor,
   birthdays,
   percentGame,
   dailySummary
@@ -294,11 +295,11 @@ export const createBotApp = ({
       return;
     }
 
-    const fileId = replyImageFileId(message.reply_to_message);
-    if (!fileId) {
+    const source = replyDemotivationSource(message.reply_to_message);
+    if (!source) {
       await sendMessage(
         chatId,
-        'Ответь командой на фото, картинку-файл или статический стикер. Из воздуха рамку не заполню.',
+        'Ответь командой на фото, картинку-файл, статический стикер или видеокружок. Из воздуха рамку не заполню.',
         message.message_id
       );
       return;
@@ -306,18 +307,27 @@ export const createBotApp = ({
 
     try {
       await api('sendChatAction', { chat_id: chatId, action: 'upload_photo' });
+      const sourceBuffer = await downloadTelegramFile(source.fileId);
+      const imageBuffer = source.kind === 'video_note'
+        ? await demotivationFrameExtractor.extractFirstFrame(sourceBuffer)
+        : sourceBuffer;
       const rendered = await demotivationRenderer.renderJpeg(
-        await downloadTelegramFile(fileId),
+        imageBuffer,
         text
       );
       await sendBuffer('sendPhoto', chatId, 'photo', 'demotivation.jpg', rendered, {
         reply_to_message_id: message.message_id
       });
     } catch (error) {
-      console.error('demotivation render failed', { chatId, fileId, error });
+      console.error('demotivation render failed', {
+        chatId,
+        fileId: source.fileId,
+        sourceKind: source.kind,
+        error
+      });
       await sendMessage(
         chatId,
-        'Не смог собрать демотиватор из этой картинки. Попробуй другое изображение.',
+        'Не смог собрать демотиватор из этого изображения или видеокружка. Попробуй другой исходник.',
         message.message_id
       );
     }
@@ -354,31 +364,39 @@ export const createBotApp = ({
     }
   };
 
-  const stickerInputFormValue = (name, emojis = '💬') =>
-    JSON.stringify({
-      sticker: `attach://${name}`,
-      emoji_list: [emojis],
-      format: 'static'
-    });
-
   const isMissingStickerSetError = (error) =>
     /sticker set not found|stickerset_invalid|stickers? set .* not found/i.test(error?.message || '');
 
-  const saveStickerBuffer = async (chatId, fromUserId, commandMessage, sticker) => {
+  const stickerSetConfigured = async (chatId, commandMessage) => {
     if (!stickerSetName) {
       await sendMessage(chatId, 'Стикерпак не настроен, пиздец. Позовите админа этого цирка.', commandMessage.message_id);
-      return;
+      return false;
     }
+    return true;
+  };
 
-    const ownerUserId = stickerSetOwnerId || fromUserId;
+  const uploadStickerBuffer = async (ownerUserId, sticker) => {
     const form = new FormData();
     form.append('user_id', String(ownerUserId));
-    form.append('name', stickerSetName);
-    form.append('sticker', stickerInputFormValue('sticker_file'));
-    form.append('sticker_file', new Blob([sticker]), 'sticker.webp');
+    form.append('sticker_format', 'static');
+    form.append('sticker', new Blob([sticker], { type: 'image/webp' }), 'sticker.webp');
+    const uploaded = await api('uploadStickerFile', form, { formData: true });
+    if (!uploaded?.file_id) throw new Error('uploadStickerFile returned no file_id');
+    return uploaded.file_id;
+  };
+
+  const saveStickerReference = async (chatId, fromUserId, commandMessage, stickerFileId) => {
+    if (!await stickerSetConfigured(chatId, commandMessage)) return;
+
+    const ownerUserId = stickerSetOwnerId || fromUserId;
+    const sticker = staticStickerInput(stickerFileId);
 
     try {
-      await api('addStickerToSet', form, { formData: true });
+      await api('addStickerToSet', {
+        user_id: ownerUserId,
+        name: stickerSetName,
+        sticker
+      });
     } catch (error) {
       console.error('addStickerToSet failed', {
         stickerSetName,
@@ -392,17 +410,12 @@ export const createBotApp = ({
         return;
       }
 
-      const createForm = new FormData();
-      createForm.append('user_id', String(ownerUserId));
-      createForm.append('name', stickerSetName);
-      createForm.append('title', stickerSetTitle);
-      createForm.append('stickers', JSON.stringify([{
-        sticker: 'attach://sticker',
-        emoji_list: ['💬'],
-        format: 'static'
-      }]));
-      createForm.append('sticker', new Blob([sticker]), 'sticker.webp');
-      await api('createNewStickerSet', createForm, { formData: true });
+      await api('createNewStickerSet', {
+        user_id: ownerUserId,
+        name: stickerSetName,
+        title: stickerSetTitle,
+        stickers: [sticker]
+      });
     }
 
     await sendMessage(
@@ -411,6 +424,30 @@ export const createBotApp = ({
       commandMessage.message_id,
       { parse_mode: 'Markdown', disable_web_page_preview: true }
     );
+  };
+
+  const saveStickerBuffer = async (chatId, fromUserId, commandMessage, sticker) => {
+    if (!await stickerSetConfigured(chatId, commandMessage)) return;
+
+    const ownerUserId = stickerSetOwnerId || fromUserId;
+    let stickerFileId;
+    try {
+      stickerFileId = await uploadStickerBuffer(ownerUserId, sticker);
+    } catch (error) {
+      console.error('uploadStickerFile failed', {
+        ownerUserId: String(ownerUserId),
+        commandUserId: String(fromUserId),
+        error: error.message
+      });
+      await sendMessage(
+        chatId,
+        'Не смог подготовить фотографию для стикерпака. В логах сохранил причину.',
+        commandMessage.message_id
+      );
+      return;
+    }
+
+    await saveStickerReference(chatId, fromUserId, commandMessage, stickerFileId);
   };
 
   const saveQuotedSticker = async (chatId, fromUserId, commandMessage) => {
@@ -444,7 +481,7 @@ export const createBotApp = ({
       return;
     }
 
-    await saveStickerBuffer(chatId, fromUserId, commandMessage, await downloadTelegramFile(sticker.file_id));
+    await saveStickerReference(chatId, fromUserId, commandMessage, sticker.file_id);
   };
 
   const deleteSticker = async (chatId, commandMessage) => {

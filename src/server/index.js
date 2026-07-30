@@ -3,6 +3,7 @@ import { Redis } from '@upstash/redis';
 import { createAnalyticsService } from '../analytics/service.js';
 import { createBirthdayService } from '../birthday/service.js';
 import { createBotApp } from '../bot/app.js';
+import { createDemotivationFrameExtractor } from '../demotivation/frame.js';
 import { createPostgresDb } from '../db/postgres.js';
 import { createMediaDownloadService } from '../media/service.js';
 import { createPercentGameService } from '../games/percent.js';
@@ -17,9 +18,18 @@ const db = await createPostgresDb();
 const analytics = createAnalyticsService({ db });
 const birthdays = createBirthdayService({ db });
 const mediaDownloader = createMediaDownloadService();
+const demotivationFrameExtractor = createDemotivationFrameExtractor();
 const percentGame = createPercentGameService({ redis });
 const dailySummary = createDailySummaryService({ db });
-const bot = createBotApp({ redis, analytics, mediaDownloader, birthdays, percentGame, dailySummary });
+const bot = createBotApp({
+  redis,
+  analytics,
+  mediaDownloader,
+  demotivationFrameExtractor,
+  birthdays,
+  percentGame,
+  dailySummary
+});
 
 birthdays.startScheduler({
   sendMessage: (chatId, text, extra = {}) => bot.api('sendMessage', {

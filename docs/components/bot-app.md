@@ -1,11 +1,19 @@
 # Приложение Telegram-бота
 
-Файл `src/bot/app.js` связывает Telegram Bot API, Redis, рендереры цитат, фото-стикеров и демотиваторов, загрузчик внешних видео, сервис аналитики, Percent Game и дни рождения. Чистая логика отбора и разметки упоминаний находится в `src/bot/mentions.js`, проверка входа `/demotivation` — в `src/demotivation/service.js`, а выбор reply-фото для `/qs` — в `src/sticker/service.js`.
+Файл `src/bot/app.js` связывает Telegram Bot API, Redis, рендереры цитат, фото-стикеров и демотиваторов, извлечение кадра видеокружка, загрузчик внешних видео, сервис аналитики, Percent Game и дни рождения. Чистая логика отбора и разметки упоминаний находится в `src/bot/mentions.js`, проверка входа `/demotivation` — в `src/demotivation/service.js`, а выбор reply-фото для `/qs` — в `src/sticker/service.js`.
 
 ## Публичный API
 
 ```js
-createBotApp({ env = process.env, redis, analytics, mediaDownloader, birthdays, percentGame })
+createBotApp({
+  env = process.env,
+  redis,
+  analytics,
+  mediaDownloader,
+  demotivationFrameExtractor,
+  birthdays,
+  percentGame
+})
 // → { api, chatAllowed, handleUpdate }
 ```
 
@@ -51,9 +59,9 @@ parseCommand(message)
 
 ## Демотиватор: `/demotivation <текст>`
 
-Команда должна отвечать на Telegram-фото, document с MIME `image/*` или статический стикер. Из массива `photo` выбирается вариант с наибольшей площадью. Animated и video stickers не поддерживаются. Подпись нормализуется в одну строку и ограничена 100 Unicode-символами; пустая или слишком длинная подпись получает подсказку без загрузки файла.
+Команда должна отвечать на Telegram-фото, document с MIME `image/*`, статический стикер или видеокружок (`video_note`). Из массива `photo` выбирается вариант с наибольшей площадью. Animated и video stickers не поддерживаются. Подпись нормализуется в одну строку и ограничена 100 Unicode-символами; пустая или слишком длинная подпись получает подсказку без загрузки файла.
 
-После проверки Bot App показывает `upload_photo`, загружает исходник через общий `downloadTelegramFile`, передаёт его `createDemotivationRenderer().renderJpeg()` и отправляет `demotivation.jpg` методом `sendPhoto` как reply на команду. Ошибка загрузки или рендера логируется и превращается в пользовательский ответ, не прерывая webhook. Геометрия и pipeline описаны в [документации renderer](demotivation-renderer.md).
+После проверки Bot App показывает `upload_photo` и загружает исходник через общий `downloadTelegramFile`. Из `video_note` зависимость `demotivationFrameExtractor` сначала извлекает первый кадр; остальные изображения передаются без промежуточного преобразования. `createDemotivationRenderer().renderJpeg()` собирает итог, который отправляется как `demotivation.jpg` методом `sendPhoto` в reply на команду. Ошибка загрузки, ffmpeg или рендера логируется и превращается в пользовательский ответ, не прерывая webhook. Геометрия и pipeline описаны в [документации renderer](demotivation-renderer.md).
 
 ## Массовое упоминание: `/all`
 
@@ -106,11 +114,11 @@ Timeline: list `chat:<chatId>:timeline`. Новый ID добавляется с
 `/qs` поддерживает два вида reply:
 
 - Telegram-фото: выбирается вариант с наибольшей площадью, исходник скачивается и напрямую преобразуется в WebP через `src/render/sticker.js`; пропорции сохраняются, обрезка, фон, рамка, текст и дополнительные поля не добавляются;
-- статический, не video и не animated стикер, отправленный текущим ботом через `/q`: готовый файл скачивается без повторного рендера.
+- статический, не video и не animated стикер, отправленный текущим ботом через `/q`: существующий Telegram `file_id` используется без скачивания и повторной загрузки.
 
 Фото пропорционально вписывается в 512×512 так, чтобы одна сторона была ровно 512 px, и при необходимости повторно кодируется с меньшим quality до лимита 512 КБ. Image-document и обычный чужой стикер для `/qs` не принимаются.
 
-Сначала вызывается `addStickerToSet`. При любой ошибке создаётся новый набор через `createNewStickerSet`; затем пользователю отправляется Markdown-ссылка на набор. Для обоих методов владельцем указывается пользователь, вызвавший команду.
+Готовый WebP-файл фотографии сначала отправляется отдельным multipart-запросом `uploadStickerFile` с MIME `image/webp`. Полученный Telegram `file_id` передаётся JSON-объектом `InputSticker` в `addStickerToSet`; вложенный multipart attachment для этого метода не используется. Если Telegram сообщает именно об отсутствующем наборе, тот же `file_id` передаётся в `createNewStickerSet`. После успеха пользователю отправляется Markdown-ссылка на набор. Владельцем служит `STICKER_SET_OWNER_ID`, а без него — автор команды.
 
 `/qd` требует reply на любой стикер и вызывает `deleteStickerFromSet` с его `file_id`. Приложение не проверяет имя набора или автора; Telegram отклонит запрещённую операцию.
 

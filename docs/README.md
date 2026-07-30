@@ -23,7 +23,7 @@ AyauBot — Telegram-бот для групповых чатов. Он прев�
 
 ## Быстрый старт
 
-Требуется Node.js с глобальными `fetch`, `FormData` и `Blob` (на практике Node.js 18+), Telegram-бот и доступный извне HTTPS URL. Для загрузки Reels/TikTok также нужны исполняемые `yt-dlp` и `ffmpeg`.
+Требуется Node.js с глобальными `fetch`, `FormData` и `Blob` (на практике Node.js 18+), Telegram-бот и доступный извне HTTPS URL. Для загрузки Reels/TikTok нужен `yt-dlp`, а для media-загрузок и первого кадра видеокружка — исполняемый `ffmpeg`.
 
 ```bash
 npm install
@@ -47,7 +47,7 @@ npm run set-webhook
 | `/q 2` … `/q 10` | Включить в цитату до 10 последовательных сообщений |
 | `/qs` | Сохранить созданный ботом статический стикер или reply-фото в групповой стикерпак |
 | `/qd` | Удалить стикер, на который отвечает команда, из его набора |
-| `/demotivation <текст>` | Создать демотиватор из изображения, на которое отвечает команда |
+| `/demotivation <текст>` | Создать демотиватор из reply-изображения или первого кадра видеокружка |
 | `/all` | Упомянуть всех известных боту действующих участников чата, кроме ботов |
 | `/top`, `/topwords` | Показать пять самых частых слов за последние 14 дней |
 | `/pidor` | Получить детерминированный на текущий день случайный выбор участника |
@@ -79,6 +79,7 @@ src/bot/mentions.js          проверка участников и постр
 src/analytics/tokenize.js    нормализация и токенизация текста
 src/analytics/service.js     аналитика и игровые сценарии
 src/birthday/service.js      дни рождения и фоновые напоминания
+src/demotivation/frame.js    извлечение первого кадра видеокружка через ffmpeg
 src/demotivation/service.js  проверка reply и текста демотиватора
 src/sticker/service.js       выбор фотографии для `/qs`
 src/db/postgres.js           схема и запросы PostgreSQL
@@ -93,6 +94,7 @@ config/percent-game.json     параметры и фразы процентно
 test/percent-game.test.js    тесты суточного результата и выбора игрока
 test/media-service.test.js   тесты загрузчика внешних видео
 test/birthday-service.test.js тесты дат и планировщика дней рождения
+test/demotivation-frame.test.js тесты ffmpeg-контракта первого кадра
 test/demotivation.test.js    тесты текста и выбора reply-изображения
 test/sticker-service.test.js тесты выбора reply-фотографии для `/qs`
 test/mentions.test.js        тесты отбора участников и Telegram entities

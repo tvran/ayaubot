@@ -2,6 +2,7 @@ import { Redis } from '@upstash/redis';
 import { createAnalyticsService } from '../src/analytics/service.js';
 import { createBirthdayService } from '../src/birthday/service.js';
 import { createBotApp } from '../src/bot/app.js';
+import { createDemotivationFrameExtractor } from '../src/demotivation/frame.js';
 import { createPostgresDb } from '../src/db/postgres.js';
 import { createMediaDownloadService } from '../src/media/service.js';
 import { createPercentGameService } from '../src/games/percent.js';
@@ -15,9 +16,18 @@ const db = await createPostgresDb();
 const analytics = createAnalyticsService({ db });
 const birthdays = createBirthdayService({ db });
 const mediaDownloader = createMediaDownloadService();
+const demotivationFrameExtractor = createDemotivationFrameExtractor();
 const percentGame = createPercentGameService({ redis });
 const dailySummary = createDailySummaryService({ db });
-const bot = createBotApp({ redis, analytics, mediaDownloader, birthdays, percentGame, dailySummary });
+const bot = createBotApp({
+  redis,
+  analytics,
+  mediaDownloader,
+  demotivationFrameExtractor,
+  birthdays,
+  percentGame,
+  dailySummary
+});
 
 export default async function handler(request, response) {
   try {
