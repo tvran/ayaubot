@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { createQuoteRenderer } from '../render/quote.js';
+import { createIsolatedQuoteRenderer } from '../render/isolated-quote.js';
 import { createDemotivationRenderer } from '../render/demotivation.js';
 import { createStickerRenderer } from '../render/sticker.js';
 import {
@@ -260,13 +260,7 @@ export const createBotApp = ({
     return Buffer.from(await response.arrayBuffer());
   };
 
-  const quoteRenderer = createQuoteRenderer({
-    api,
-    downloadTelegramFile,
-    fetchImpl,
-    env,
-    signalProvider: () => context.getStore()?.signal
-  });
+  const quoteRenderer = createIsolatedQuoteRenderer({ env });
   const demotivationRenderer = createDemotivationRenderer();
   const stickerRenderer = createStickerRenderer();
 
@@ -421,7 +415,32 @@ export const createBotApp = ({
   };
 
   const sendQuote = async (chatId, commandMessage, messages) => {
-    const sticker = await quoteRenderer.renderStickerWebp(messages);
+    const startedAt = Date.now();
+    let sticker;
+    try {
+      sticker = await quoteRenderer.renderStickerWebp(messages, {
+        signal: context.getStore()?.signal
+      });
+      metrics?.increment('quote_renders_total', { result: 'ok' });
+    } catch (error) {
+      metrics?.increment('quote_renders_total', { result: error?.code || 'error' });
+      logger.error('quote render failed', {
+        chatId,
+        messageId: commandMessage.message_id,
+        durationMs: Date.now() - startedAt,
+        code: error?.code,
+        error: error?.message || String(error)
+      });
+      if (context.getStore()?.signal?.aborted) throw error;
+      await sendMessage(
+        chatId,
+        'Не смог отрендерить цитату вовремя. Процесс прибил, очередь дальше не держу — попробуй ещё раз попроще.',
+        commandMessage.message_id
+      );
+      return;
+    } finally {
+      metrics?.observe('quote_render_duration_seconds', (Date.now() - startedAt) / 1000);
+    }
     await sendBuffer('sendSticker', chatId, 'sticker', 'quote.webp', sticker, {
       reply_to_message_id: commandMessage.message_id
     });

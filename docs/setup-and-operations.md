@@ -82,6 +82,7 @@ Npm scripts:
 | `SCHEDULER_LEASE_MS` | Необязательна | TTL distributed scheduler lease, по умолчанию 10 минут |
 | `WORKER_CONCURRENCY`, `WORKER_HEAVY_CONCURRENCY` | Необязательны | Default/heavy параллельность, по умолчанию 4/1 |
 | `WORKER_JOB_TIMEOUT_MS`, `WORKER_HEAVY_JOB_TIMEOUT_MS` | Необязательны | Общий timeout задачи, 120/180 секунд |
+| `QUOTE_RENDER_TIMEOUT_MS` | Необязательна | Жёсткий timeout изолированного `/q` renderer, по умолчанию 30 секунд; дочерний процесс завершается через `SIGKILL` |
 | `QUEUE_POLL_MS`, `QUEUE_LOCK_MS`, `QUEUE_MAX_ATTEMPTS` | Необязательны | Poll, lease и попытки: 1000 ms, 60000 ms, 5 |
 | `QUEUE_RETRY_BASE_MS`, `QUEUE_RETRY_MAX_MS` | Необязательны | Границы exponential backoff: 1000/60000 ms |
 | `QUEUE_ALERT_DEPTH`, `QUEUE_ALERT_AGE_SECONDS` | Необязательны | Warning при 50 задачах или возрасте 60 секунд |

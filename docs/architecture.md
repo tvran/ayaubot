@@ -12,7 +12,7 @@ Node HTTP server┘                                  │               │
                                                   │               ├─► Redis: кеш сообщений и `/percent`
                                                   │               ├─► Analytics/Birthday ─► PostgreSQL
                                                   │               ├─► Media Service ─► yt-dlp + ffmpeg
-                                                  │               └─► Satori + Sharp renderers
+                                                  │               └─► isolated `/q` child ─► Satori + Sharp
                                                   └─► retries, DLQ, per-chat leases
 ```
 
@@ -32,7 +32,7 @@ Node HTTP server┘                                  │               │
 | Tokenizer          | `src/analytics/tokenize.js`              | Очистка, нормализация и подсчёт слов                            |
 | PostgreSQL adapter | `src/db/postgres.js`                     | Инициализация схемы и SQL-операции                              |
 | Media Service      | `src/media/service.js`                   | Поиск Reels/TikTok URL и загрузка видео через yt-dlp            |
-| Quote Renderer     | `src/render/quote.js`                    | Преобразование сообщений в SVG, PNG или WebP                    |
+| Quote Renderer     | `src/render/quote.js`, `src/render/isolated-quote.js`, `src/render/quote-child.js` | Изолированное преобразование сообщений в SVG/PNG/WebP |
 | Photo Sticker Renderer | `src/render/sticker.js`             | Прямое преобразование reply-фото в статический WebP             |
 | Demotivation Frame Extractor | `src/demotivation/frame.js`  | Первый кадр Telegram-видеокружка через ffmpeg                    |
 | Demotivation Renderer | `src/render/demotivation.js`          | Рамка, растянутое reply-изображение и JPEG                      |
@@ -55,7 +55,7 @@ Node HTTP server┘                                  │               │
 
 Команда `/q N` должна быть ответом на первое сообщение. Ответное сообщение принудительно кешируется, затем из Redis выбираются сообщения с `message_id` от него включительно до сообщения-команды исключительно. Команды исключаются, ID сортируются по возрастанию, результат ограничивается `N` сообщениями.
 
-Рендерер определяет фактического автора с учётом `forward_origin`, загружает аватар и медиа через Telegram API, строит дерево Satori, получает SVG и передаёт его Sharp. Итоговый WebP вписывается в область 512×430 без увеличения и получает прозрачный нижний отступ 82 px.
+Worker запускает для каждой цитаты отдельный дочерний Node.js-процесс. Он определяет фактического автора с учётом `forward_origin`, загружает аватар и медиа через Telegram API, строит дерево Satori, получает SVG и передаёт его Sharp. Итоговый WebP вписывается в область 512×430 без увеличения и получает прозрачный нижний отступ 82 px. Timeout или отмена завершают весь дочерний процесс через `SIGKILL`, поэтому зависший нативный render не остаётся внутри worker и не блокирует следующие задачи чата.
 
 Если `/qs` отвечает непосредственно на Telegram-фото, Bot App выбирает его крупнейший вариант и передаёт отдельному renderer. Sharp применяет EXIF-ориентацию, пропорционально вписывает изображение в 512×512 без обрезки и без добавления фона, рамки, текста или полей, затем кодирует статический WebP размером не более 512 КБ. Одна из сторон результата всегда равна 512 px. Reply на созданный ботом стикер `/q` продолжает сохранять уже готовый файл без повторного рендера.
 

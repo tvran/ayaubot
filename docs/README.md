@@ -95,6 +95,8 @@ src/db/postgres.js           схема и запросы PostgreSQL
 src/games/percent.js         настраиваемая процентная игра
 src/media/service.js         загрузка Reels/TikTok через yt-dlp
 src/render/demotivation.js   рендер демотиватора в JPEG
+src/render/isolated-quote.js запуск и принудительная отмена `/q` child process
+src/render/quote-child.js    изолированный production-процесс рендера цитаты
 src/render/quote.js          построение и растеризация цитат
 src/render/sticker.js        прямое преобразование фото в WebP-стикер
 src/render/theme.js          визуальные константы
@@ -105,6 +107,7 @@ test/media-service.test.js   тесты загрузчика внешних ви
 test/birthday-service.test.js тесты дат и планировщика дней рождения
 test/demotivation-frame.test.js тесты ffmpeg-контракта первого кадра
 test/demotivation.test.js    тесты текста и выбора reply-изображения
+test/isolated-quote.test.js  тесты process isolation, timeout и cancellation `/q`
 test/sticker-service.test.js тесты выбора reply-фотографии для `/qs`
 test/mentions.test.js        тесты отбора участников и Telegram entities
 vercel.json                  лимит выполнения Vercel Function
