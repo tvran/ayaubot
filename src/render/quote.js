@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import satori from 'satori';
 import sharp from 'sharp';
+import { fetchWithTimeout } from '../runtime/fetch.js';
 import { theme } from './theme.js';
 
 const regularFont = readFileSync(join(process.cwd(), 'assets/fonts/NotoSans-Regular.ttf'));
@@ -245,27 +246,45 @@ const emojiCode = (value) =>
     .filter((code) => code !== 'fe0f')
     .join('-');
 
-const emojiDataUri = async (value) => {
+const emojiDataUri = async (value, { fetchImpl, timeoutMs, signal }) => {
   const code = emojiCode(value);
   if (emojiCache.has(code)) return emojiCache.get(code);
 
-  const apple = await fetch(`https://cdn.jsdelivr.net/npm/emoji-datasource-apple@15.1.2/img/apple/64/${code}.png`);
-  if (apple.ok) {
-    const image = Buffer.from(await apple.arrayBuffer());
-    const uri = `data:image/png;base64,${image.toString('base64')}`;
-    emojiCache.set(code, uri);
-    return uri;
+  try {
+    const apple = await fetchWithTimeout(
+      fetchImpl,
+      `https://cdn.jsdelivr.net/npm/emoji-datasource-apple@15.1.2/img/apple/64/${code}.png`,
+      {},
+      { timeoutMs, signal, label: 'Apple emoji CDN' }
+    );
+    if (apple.ok) {
+      const image = Buffer.from(await apple.arrayBuffer());
+      const uri = `data:image/png;base64,${image.toString('base64')}`;
+      emojiCache.set(code, uri);
+      return uri;
+    }
+  } catch {
+    // Twemoji below is the independent fallback.
   }
 
-  const response = await fetch(`https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/${code}.svg`);
-  if (!response.ok) return null;
-  const svg = await response.text();
-  const uri = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
-  emojiCache.set(code, uri);
-  return uri;
+  try {
+    const response = await fetchWithTimeout(
+      fetchImpl,
+      `https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/${code}.svg`,
+      {},
+      { timeoutMs, signal, label: 'Twemoji CDN' }
+    );
+    if (!response.ok) return null;
+    const svg = await response.text();
+    const uri = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+    emojiCache.set(code, uri);
+    return uri;
+  } catch {
+    return null;
+  }
 };
 
-const lineElements = async (line, fontSize = theme.text.bodySize) => {
+const lineElements = async (line, fontSize = theme.text.bodySize, emojiOptions) => {
   const runs = line.reduce((items, segment) => {
     const previous = items.at(-1);
     if (previous && sameStyle(previous, segment)) previous.text += segment.text;
@@ -275,7 +294,7 @@ const lineElements = async (line, fontSize = theme.text.bodySize) => {
 
   return Promise.all(runs.map(async (segment, index) => {
     if (segment.emoji) {
-      const src = await emojiDataUri(segment.text);
+      const src = await emojiDataUri(segment.text, emojiOptions);
       if (src) {
         return el('img', {
           key: index,
@@ -439,7 +458,19 @@ const buildAvatar = (avatar, user, color, size, top) => {
   }, initials(user));
 };
 
-export const createQuoteRenderer = ({ api, downloadTelegramFile }) => {
+export const createQuoteRenderer = ({
+  api,
+  downloadTelegramFile,
+  fetchImpl = fetch,
+  env = process.env,
+  signalProvider = () => undefined
+}) => {
+  const emojiTimeoutMs = Math.max(500, Number(env.EMOJI_CDN_TIMEOUT_MS) || 5_000);
+  const emojiOptions = () => ({
+    fetchImpl,
+    timeoutMs: emojiTimeoutMs,
+    signal: signalProvider()
+  });
   const avatarDataUri = async (user) => {
     if (!user?.id) return null;
     const photos = await api('getUserProfilePhotos', { user_id: user.id, limit: 1 });
@@ -520,10 +551,11 @@ export const createQuoteRenderer = ({ api, downloadTelegramFile }) => {
         ? chooseTextLayout(textSegments)
         : media ? null : chooseTextLayout(fallbackSegments(message));
       const lines = textLayout?.lines || [];
-      const nameElements = await lineElements(plainSegments(name));
+      const nameElements = await lineElements(plainSegments(name), theme.text.bodySize, emojiOptions());
       const bodyFontSize = textLayout?.fontSize || theme.text.bodySize;
       const bodyLineHeight = textLayout?.lineHeight || theme.text.bodyLineHeight;
-      const bodyLineElements = await Promise.all(lines.map((line) => lineElements(line, bodyFontSize)));
+      const bodyLineElements = await Promise.all(lines.map((line) =>
+        lineElements(line, bodyFontSize, emojiOptions())));
       const nameWidth = Math.min(520, Math.ceil(Array.from(name).length * theme.text.nameSize * 0.54));
       const textWidth = textLayout?.width || 0;
       const minTextWidth = theme.text.minBubbleWidth;

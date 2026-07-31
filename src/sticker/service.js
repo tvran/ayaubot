@@ -10,3 +10,9 @@ export const replyPhotoFileId = (reply) => {
     return area > largestArea ? photo : largest;
   }, null)?.file_id;
 };
+
+export const staticStickerInput = (sticker, emoji = '💬') => ({
+  sticker,
+  emoji_list: [emoji],
+  format: 'static'
+});

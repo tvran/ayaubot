@@ -1,3 +1,5 @@
+import { fetchWithTimeout } from '../runtime/fetch.js';
+
 const timeZone = 'Asia/Almaty';
 const summaryModel = 'gpt-5.4-mini';
 
@@ -109,8 +111,9 @@ const inputForMessages = (messages) => messages
 
 export const createDailySummaryService = ({ db, env = process.env, fetchImpl = fetch } = {}) => {
   const apiKey = env.OPENAI_API_KEY;
+  const timeoutMs = Math.max(1_000, Number(env.OPENAI_TIMEOUT_MS) || 45_000);
 
-  const summaryText = async (chatId, day = dayString()) => {
+  const summaryText = async (chatId, day = dayString(), { signal } = {}) => {
     if (!db) return 'Итоги дня требуют PostgreSQL. База пока не подключена.';
     if (!apiKey) return 'Итоги дня пока не настроены: добавь OPENAI_API_KEY в переменные хостинга.';
 
@@ -120,34 +123,39 @@ export const createDailySummaryService = ({ db, env = process.env, fetchImpl = f
     const messages = await db.messagesForDay(chatId, day);
     if (messages.length < 5) return 'За этот день пока слишком мало сообщений для нормального итога. Дайте чату немного пожить.';
 
-    const response = await fetchImpl('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        'content-type': 'application/json'
+    const response = await fetchWithTimeout(
+      fetchImpl,
+      'https://api.openai.com/v1/responses',
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${apiKey}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: summaryModel,
+          input: [
+            {
+              role: 'system',
+              content: 'Ты редактор итогов Telegram-чата. Пиши на русском кратко и живо. Используй только факты из сообщений. Не выдумывай решения, рекомендации, имена или ссылки. Для каждого пункта указывай реальные messageIds из входных сообщений. Игнорируй команды бота, рекламу и бессмысленный флуд. Дай максимум 4 темы, 5 решений, 3 рекомендации и 5 ссылок; текст каждого пункта — до 240 символов.'
+            },
+            {
+              role: 'user',
+              content: `Составь итог дня ${day}. Сообщения:\n\n${inputForMessages(messages)}`
+            }
+          ],
+          text: {
+            format: {
+              type: 'json_schema',
+              name: 'daily_chat_summary',
+              strict: true,
+              schema
+            }
+          }
+        })
       },
-      body: JSON.stringify({
-        model: summaryModel,
-        input: [
-          {
-            role: 'system',
-            content: 'Ты редактор итогов Telegram-чата. Пиши на русском кратко и живо. Используй только факты из сообщений. Не выдумывай решения, рекомендации, имена или ссылки. Для каждого пункта указывай реальные messageIds из входных сообщений. Игнорируй команды бота, рекламу и бессмысленный флуд. Дай максимум 4 темы, 5 решений, 3 рекомендации и 5 ссылок; текст каждого пункта — до 240 символов.'
-          },
-          {
-            role: 'user',
-            content: `Составь итог дня ${day}. Сообщения:\n\n${inputForMessages(messages)}`
-          }
-        ],
-        text: {
-          format: {
-            type: 'json_schema',
-            name: 'daily_chat_summary',
-            strict: true,
-            schema
-          }
-        }
-      })
-    });
+      { timeoutMs, signal, label: 'OpenAI daily summary' }
+    );
     const data = await response.json();
     if (!response.ok) throw new Error(data.error?.message || 'OpenAI request failed');
 

@@ -1,71 +1,59 @@
-# Входные точки и регистрация webhook
+# Входные точки, worker и регистрация webhook
 
 ## `api/telegram.js`: Vercel Function
 
-Модуль при загрузке:
+Модуль создаёт PostgreSQL adapter, очередь и ingress. Bot App, Redis, renderer и media-зависимости в webhook-функции больше не инициализируются.
 
-1. создаёт Redis client, только если заданы обе Upstash-переменные;
-2. вызывает `createPostgresDb()` и ждёт инициализации схемы;
-3. создаёт Analytics Service и Birthday Service даже при `db === null`;
-4. создаёт Media Download Service и Percent Game;
-5. создаёт Bot App и экспортирует HTTP handler по умолчанию.
+Handler:
 
-Контракт handler:
+- любой метод кроме POST возвращает 200;
+- проверяет `x-telegram-bot-api-secret-token`, если задан `WEBHOOK_SECRET`;
+- принимает только `message`/`edited_message` с корректными `update_id` и chat ID;
+- фиксирует update в `telegram_update_jobs`;
+- отвечает 200 после INSERT; duplicate `update_id` также считается успехом;
+- внутреннюю ошибку логирует и согласно контракту проекта всё равно отвечает 200.
 
-- любой метод кроме POST возвращает 200 и `{ ok: true }`;
-- при заданном `WEBHOOK_SECRET` неверный заголовок возвращает 401;
-- тело POST без дополнительной валидации передаётся в `bot.handleUpdate`;
-- успешная обработка возвращает 200;
-- исключение логируется и тоже возвращает 200.
+## `src/server/index.js`: Railway web-service
 
-Vercel-конфигурация в `vercel.json` ограничивает выполнение функции 60 секундами. Долгие запросы чаще всего связаны с последовательной загрузкой аватаров/медиа, CDN emoji или Telegram API.
+Постоянный HTTP-сервис выполняет ту же enqueue-функцию и слушает `PORT` либо 3000:
 
-## `src/server/index.js`: Node.js HTTP-сервер
+- `POST /telegram/webhook` — проверка секрета и постановка update в очередь;
+- `GET /health` — проверка соединения и наличия таблицы очереди;
+- `GET /metrics` — Prometheus text format;
+- остальные маршруты — 404.
 
-Сборка зависимостей совпадает с Vercel-вариантом. Дополнительно модуль запускает планировщик дней рождения, создаёт `node:http` server и слушает `PORT` либо 3000. Vercel handler планировщик не запускает.
+Размер request body ограничен `WEBHOOK_MAX_BODY_BYTES`. Bot App и birthday scheduler в web-процессе не запускаются, поэтому web-service можно горизонтально масштабировать.
 
-`readJson(request)` полностью собирает body в память и разбирает JSON. Лимит размера тела не установлен. Пустое тело превращается в `{}`.
+## `src/worker/index.js`: Railway worker-service
 
-`sendJson(response, status, body)` всегда выставляет `content-type: application/json` и сериализует объект.
+Команда `npm run worker` создаёт Bot App и все его зависимости, запускает PostgreSQL queue worker, birthday scheduler и небольшой HTTP-сервер для `/health` и `/metrics`.
 
-Маршрутизация жёстко задана:
+Worker обрабатывает разные чаты параллельно, но использует PostgreSQL chat lease для последовательности внутри одного чата. Тяжёлые задачи имеют отдельный лимит конкурентности. При `SIGTERM` worker прекращает polling, останавливает scheduler и ждёт активные задачи до 20 секунд.
 
-- health check: `GET /health`;
-- Telegram: `POST /telegram/webhook`;
-- всё остальное: 404.
-
-Ошибки JSON и приложения логируются, но ответ Telegram остаётся успешным 200.
+Birthday scheduler выполняет tick через `scheduler_leases`, поэтому несколько worker replicas не дублируют планировщик. Delivery markers остаются вторым уровнем идемпотентности.
 
 ## `scripts/set-webhook.js`: регистрация
 
-Скрипт требует `BOT_TOKEN`, `WEBHOOK_SECRET` и одну из переменных URL:
+Скрипт требует `BOT_TOKEN`, `WEBHOOK_SECRET` и `VERCEL_PROJECT_PRODUCTION_URL` либо `APP_URL`. `WEBHOOK_PATH` по умолчанию `/api/telegram`.
 
-1. `VERCEL_PROJECT_PRODUCTION_URL` — приоритетная;
-2. `APP_URL` — резервная.
-
-Если URL не начинается с `http`, добавляется `https://`. `WEBHOOK_PATH` нормализуется добавлением начального `/`; значение по умолчанию — `/api/telegram`.
-
-В Telegram `setWebhook` отправляются:
+Payload содержит:
 
 ```json
 {
   "url": "https://example.com/api/telegram",
   "secret_token": "<WEBHOOK_SECRET>",
   "allowed_updates": ["message", "edited_message"],
-  "drop_pending_updates": true
+  "max_connections": 10,
+  "drop_pending_updates": false
 }
 ```
 
-Если Telegram возвращает `ok: false`, скрипт завершается исключением с `description`. При успехе печатается итоговый URL.
+`TELEGRAM_MAX_CONNECTIONS` ограничивает давление Telegram на web-service. Очередь по умолчанию сохраняется. Для аварийного безвозвратного удаления накопленных updates нужно явно установить `TELEGRAM_DROP_PENDING_UPDATES=true` на один запуск.
 
-Важно: `drop_pending_updates: true` удаляет очередь необработанных обновлений при каждом повторном запуске скрипта.
+## Production-порядок
 
-## Различия режимов
-
-| Характеристика | Vercel | Node.js server |
-| --- | --- | --- |
-| Endpoint | `/api/telegram` | `/telegram/webhook` |
-| Health | Любой не-POST к функции | Только `GET /health` |
-| Порт | Управляется Vercel | `PORT`, по умолчанию 3000 |
-| Максимальное время | 60 секунд в конфигурации | Явного лимита нет |
-| Запуск | `npm run dev` / deployment | `npm start` |
+1. `npm run migrate` с production `DATABASE_URL`.
+2. Развернуть worker и дождаться успешного `/health`.
+3. Развернуть web-service и дождаться успешного `/health`.
+4. Выполнить `npm run set-webhook` с `TELEGRAM_DROP_PENDING_UPDATES=false`.
+5. Проверить queue metrics и логи обоих сервисов.

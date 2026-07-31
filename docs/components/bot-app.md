@@ -1,17 +1,29 @@
 # Приложение Telegram-бота
 
-Файл `src/bot/app.js` связывает Telegram Bot API, Redis, рендереры цитат, фото-стикеров и демотиваторов, загрузчик внешних видео, сервис аналитики, Percent Game и дни рождения. Чистая логика отбора и разметки упоминаний находится в `src/bot/mentions.js`, проверка входа `/demotivation` — в `src/demotivation/service.js`, а выбор reply-фото для `/qs` — в `src/sticker/service.js`.
+Файл `src/bot/app.js` связывает Telegram Bot API, Redis, рендереры цитат, фото-стикеров и демотиваторов, извлечение кадра видеокружка, загрузчик внешних видео, сервис аналитики, Percent Game и дни рождения. Чистая логика отбора и разметки упоминаний находится в `src/bot/mentions.js`, проверка входа `/demotivation` — в `src/demotivation/service.js`, а выбор reply-фото для `/qs` — в `src/sticker/service.js`.
 
 ## Публичный API
 
 ```js
-createBotApp({ env = process.env, redis, analytics, mediaDownloader, birthdays, percentGame })
+createBotApp({
+  env = process.env,
+  redis,
+  redisGateway,
+  analytics,
+  mediaDownloader,
+  demotivationFrameExtractor,
+  birthdays,
+  percentGame,
+  dailySummary,
+  rateLimiter,
+  metrics
+})
 // → { api, chatAllowed, handleUpdate }
 ```
 
-- `api(method, payload, options)` вызывает метод Telegram Bot API и возвращает `result`; при `ok: false` бросает ошибку.
+- `api(method, payload, options)` вызывает Telegram Bot API с таймаутом, метриками и ограниченными повторами для 429/5xx; при финальном `ok: false` бросает ошибку.
 - `chatAllowed(chatId)` проверяет allowlist. Пустой список разрешает любой chat ID.
-- `handleUpdate(update)` — главный обработчик Telegram Update.
+- `handleUpdate(update, { signal, lane })` — главный обработчик worker-задачи; abort signal проходит в сетевые и media-операции.
 
 `BOT_TOKEN` читается из `env`. Отдельной ранней проверки токена нет: при отсутствии значения приложение создаст URL с `undefined`, а ошибка проявится на первом API-вызове. Числовой префикс токена используется как `botId`, чтобы исключить самого бота из ежедневного выбора и проверить автора стикера для `/qs`.
 
@@ -38,7 +50,7 @@ parseCommand(message)
 Порядок действий:
 
 1. проверить chat allowlist;
-2. сохранить сообщение в Redis;
+2. сохранить сообщение в Redis одним pipeline; ошибка открывает circuit breaker и не останавливает команду;
 3. разобрать команду;
 4. для обычного сообщения — записать аналитику, проверить кодовое слово и обработать media URL;
 5. для команды — сохранить профиль автора без учёта слов;
@@ -47,13 +59,26 @@ parseCommand(message)
 8. команды дней рождения передать в Birthday Service;
 9. для остальных команд — обратиться к Analytics Service.
 
+Перед выполнением команды применяется per-user/per-chat rate limit. Обычные команды и heavy-задачи имеют независимые лимиты. Для сообщения с media URL аналитика сохраняется до проверки heavy-limit, но сама загрузка может быть отклонена.
+
 Неизвестные команды молча игнорируются, но профиль автора сохраняется в `users`. Текст любых команд не входит в статистику слов.
+
+## Таймауты и деградация
+
+- JSON Telegram API: `TELEGRAM_API_TIMEOUT_MS`, по умолчанию 15 секунд;
+- multipart upload: `TELEGRAM_UPLOAD_TIMEOUT_MS`, по умолчанию 120 секунд;
+- Telegram File API: `TELEGRAM_FILE_TIMEOUT_MS`, по умолчанию 30 секунд;
+- Redis REST: `REDIS_TIMEOUT_MS`, по умолчанию 1 секунда;
+- после ошибки Redis circuit открывается на `REDIS_CIRCUIT_OPEN_MS`, по умолчанию 30 секунд;
+- `cacheMessage` объединяет SET/LPUSH/LTRIM/EXPIRE в один Upstash pipeline, а чтение цитаты использует MGET.
+
+Ошибки Redis дают функциональную деградацию `/q` и `/percent`, но не заставляют worker повторять весь Telegram update.
 
 ## Демотиватор: `/demotivation <текст>`
 
-Команда должна отвечать на Telegram-фото, document с MIME `image/*` или статический стикер. Из массива `photo` выбирается вариант с наибольшей площадью. Animated и video stickers не поддерживаются. Подпись нормализуется в одну строку и ограничена 100 Unicode-символами; пустая или слишком длинная подпись получает подсказку без загрузки файла.
+Команда должна отвечать на Telegram-фото, document с MIME `image/*`, статический стикер или видеокружок (`video_note`). Из массива `photo` выбирается вариант с наибольшей площадью. Animated и video stickers не поддерживаются. Подпись нормализуется в одну строку и ограничена 100 Unicode-символами; пустая или слишком длинная подпись получает подсказку без загрузки файла.
 
-После проверки Bot App показывает `upload_photo`, загружает исходник через общий `downloadTelegramFile`, передаёт его `createDemotivationRenderer().renderJpeg()` и отправляет `demotivation.jpg` методом `sendPhoto` как reply на команду. Ошибка загрузки или рендера логируется и превращается в пользовательский ответ, не прерывая webhook. Геометрия и pipeline описаны в [документации renderer](demotivation-renderer.md).
+После проверки Bot App показывает `upload_photo` и загружает исходник через общий `downloadTelegramFile`. Из `video_note` зависимость `demotivationFrameExtractor` сначала извлекает первый кадр; остальные изображения передаются без промежуточного преобразования. `createDemotivationRenderer().renderJpeg()` собирает итог, который отправляется как `demotivation.jpg` методом `sendPhoto` в reply на команду. Ошибка загрузки, ffmpeg или рендера логируется и превращается в пользовательский ответ, не прерывая webhook. Геометрия и pipeline описаны в [документации renderer](demotivation-renderer.md).
 
 ## Массовое упоминание: `/all`
 
@@ -95,9 +120,11 @@ Timeline: list `chat:<chatId>:timeline`. Новый ID добавляется с
 
 ## Создание цитаты: `/q [N]`
 
-Команда должна отвечать на первое цитируемое сообщение. Reply принудительно записывается в Redis, что полезно, если его не было в timeline ранее. Затем сообщения собираются до ID команды и передаются `renderStickerWebp`.
+Команда должна отвечать на первое цитируемое сообщение. Reply принудительно записывается в Redis, что полезно, если его не было в timeline ранее. Затем сообщения собираются до ID команды и передаются изолированному `renderStickerWebp` в отдельном дочернем процессе.
 
 Готовый buffer отправляется через `sendSticker` как multipart поле `sticker`, имя файла `quote.webp`, с ответом на сообщение-команду.
+
+Если дочерний renderer не завершился за `QUOTE_RENDER_TIMEOUT_MS`, Bot App принудительно завершает его, логирует и измеряет `quote_renders_total`/`quote_render_duration_seconds`, сообщает пользователю об ошибке и завершает queue job без повторного зависания. Сигнал отмены всей job также немедленно завершает дочерний процесс.
 
 Без Redis `collectMessages` всегда пуст, поэтому даже `/q` для одного reply завершится подсказкой о кеше.
 
@@ -106,11 +133,11 @@ Timeline: list `chat:<chatId>:timeline`. Новый ID добавляется с
 `/qs` поддерживает два вида reply:
 
 - Telegram-фото: выбирается вариант с наибольшей площадью, исходник скачивается и напрямую преобразуется в WebP через `src/render/sticker.js`; пропорции сохраняются, обрезка, фон, рамка, текст и дополнительные поля не добавляются;
-- статический, не video и не animated стикер, отправленный текущим ботом через `/q`: готовый файл скачивается без повторного рендера.
+- статический, не video и не animated стикер, отправленный текущим ботом через `/q`: существующий Telegram `file_id` используется без скачивания и повторной загрузки.
 
 Фото пропорционально вписывается в 512×512 так, чтобы одна сторона была ровно 512 px, и при необходимости повторно кодируется с меньшим quality до лимита 512 КБ. Image-document и обычный чужой стикер для `/qs` не принимаются.
 
-Сначала вызывается `addStickerToSet`. При любой ошибке создаётся новый набор через `createNewStickerSet`; затем пользователю отправляется Markdown-ссылка на набор. Для обоих методов владельцем указывается пользователь, вызвавший команду.
+Готовый WebP-файл фотографии сначала отправляется отдельным multipart-запросом `uploadStickerFile` с MIME `image/webp`. Полученный Telegram `file_id` передаётся JSON-объектом `InputSticker` в `addStickerToSet`; вложенный multipart attachment для этого метода не используется. Если Telegram сообщает именно об отсутствующем наборе, тот же `file_id` передаётся в `createNewStickerSet`. После успеха пользователю отправляется Markdown-ссылка на набор. Владельцем служит `STICKER_SET_OWNER_ID`, а без него — автор команды.
 
 `/qd` требует reply на любой стикер и вызывает `deleteStickerFromSet` с его `file_id`. Приложение не проверяет имя набора или автора; Telegram отклонит запрещённую операцию.
 

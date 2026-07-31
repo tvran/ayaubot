@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { replyPhotoFileId } from '../src/sticker/service.js';
+import { replyPhotoFileId, staticStickerInput } from '../src/sticker/service.js';
 
 test('replyPhotoFileId selects the largest Telegram photo variant', () => {
   const reply = {
@@ -20,4 +20,12 @@ test('replyPhotoFileId accepts only Telegram photo replies', () => {
   assert.equal(replyPhotoFileId({ photo: [] }), undefined);
   assert.equal(replyPhotoFileId({ document: { file_id: 'image-document' } }), undefined);
   assert.equal(replyPhotoFileId({ sticker: { file_id: 'sticker' } }), undefined);
+});
+
+test('staticStickerInput references an uploaded Telegram file without multipart nesting', () => {
+  assert.deepEqual(staticStickerInput('telegram-file-id'), {
+    sticker: 'telegram-file-id',
+    emoji_list: ['💬'],
+    format: 'static'
+  });
 });

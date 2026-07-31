@@ -18,7 +18,9 @@
 
 ## Ежедневная проверка
 
-`src/server/index.js` вызывает `startScheduler()` один раз при старте постоянного Node.js-процесса. Сервис сразу выполняет проверку, затем повторяет её через `BIRTHDAY_CHECK_INTERVAL_MS`.
+`src/worker/index.js` вызывает `startScheduler()` при старте worker-процесса. Web ingress и serverless entrypoint планировщик не запускают. Сервис сразу выполняет проверку, затем повторяет её через `BIRTHDAY_CHECK_INTERVAL_MS`.
+
+Каждый tick оборачивается PostgreSQL lease `birthday-notifications` из таблицы `scheduler_leases`. Поэтому разрешено запускать несколько worker replicas: только владелец lease выполняет выборку и отправку. Lease продлевается во время долгого tick и освобождается в `finally`; delivery markers дополнительно защищают отдельные сообщения.
 
 Проверка ничего не отправляет до `BIRTHDAY_CHECK_HOUR` в часовом поясе `BIRTHDAY_TIME_ZONE`. После контрольного часа:
 

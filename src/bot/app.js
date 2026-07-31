@@ -1,16 +1,24 @@
-import { createQuoteRenderer } from '../render/quote.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { createIsolatedQuoteRenderer } from '../render/isolated-quote.js';
 import { createDemotivationRenderer } from '../render/demotivation.js';
 import { createStickerRenderer } from '../render/sticker.js';
 import {
   maxDemotivationTextLength,
   normalizeDemotivationText,
-  replyImageFileId
+  replyDemotivationSource
 } from '../demotivation/service.js';
-import { replyPhotoFileId } from '../sticker/service.js';
+import { replyPhotoFileId, staticStickerInput } from '../sticker/service.js';
+import { classifyUpdateLane } from '../queue/classify.js';
+import { fetchWithTimeout, waitWithSignal } from '../runtime/fetch.js';
 import { buildMentionMessages, findMentionableUsers } from './mentions.js';
 
 const cacheTtlSeconds = 60 * 60 * 24 * 90;
 const cacheLimit = 10000;
+
+const positiveInteger = (value, fallback) => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+};
 
 const parseAllowedChatIds = (env) =>
   new Set((env.ALLOWED_CHAT_IDS || env.ALLOWED_CHAT_ID || '')
@@ -106,11 +114,17 @@ export const parseCommand = (message) => {
 export const createBotApp = ({
   env = process.env,
   redis,
+  redisGateway,
   analytics,
   mediaDownloader,
+  demotivationFrameExtractor,
   birthdays,
   percentGame,
-  dailySummary
+  dailySummary,
+  rateLimiter,
+  metrics,
+  fetchImpl = fetch,
+  logger = console
 } = {}) => {
   const token = env.BOT_TOKEN;
   const allowedChatIds = parseAllowedChatIds(env);
@@ -119,19 +133,78 @@ export const createBotApp = ({
   const stickerSetOwnerId = env.STICKER_SET_OWNER_ID;
   const botId = Number((token || '').split(':')[0]);
   const helpText = buildHelpText(percentGame?.command);
+  const context = new AsyncLocalStorage();
+  const telegramApiTimeoutMs = positiveInteger(env.TELEGRAM_API_TIMEOUT_MS, 15_000);
+  const telegramUploadTimeoutMs = positiveInteger(env.TELEGRAM_UPLOAD_TIMEOUT_MS, 120_000);
+  const telegramFileTimeoutMs = positiveInteger(env.TELEGRAM_FILE_TIMEOUT_MS, 30_000);
+  const telegramApiRetries = Math.min(positiveInteger(env.TELEGRAM_API_RETRIES, 2), 5);
+
+  const redisCall = redisGateway?.call || (async (operation, callback, fallback) => {
+    if (!redis) return fallback;
+    const startedAt = Date.now();
+    try {
+      const result = await callback(redis);
+      metrics?.increment('redis_operations_total', { operation, result: 'ok' });
+      metrics?.observe('redis_operation_duration_seconds', (Date.now() - startedAt) / 1000, { operation });
+      return result;
+    } catch (error) {
+      metrics?.increment('redis_operations_total', { operation, result: 'error' });
+      logger.error('redis operation failed', { operation, error: error?.message || String(error) });
+      return fallback;
+    }
+  });
 
   const api = async (method, payload, options = {}) => {
-    const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
-      method: 'POST',
-      body: options.formData ? payload : JSON.stringify(payload),
-      headers: options.formData ? undefined : { 'content-type': 'application/json' }
-    });
-    const data = await response.json();
-    if (!data.ok) throw new Error(`${method}: ${data.description}`);
-    return data.result;
+    const signal = options.signal || context.getStore()?.signal;
+    const timeoutMs = options.formData ? telegramUploadTimeoutMs : telegramApiTimeoutMs;
+    for (let attempt = 0; attempt <= telegramApiRetries; attempt += 1) {
+      const startedAt = Date.now();
+      let response;
+      try {
+        response = await fetchWithTimeout(
+          fetchImpl,
+          `https://api.telegram.org/bot${token}/${method}`,
+          {
+            method: 'POST',
+            body: options.formData ? payload : JSON.stringify(payload),
+            headers: options.formData ? undefined : { 'content-type': 'application/json' }
+          },
+          { timeoutMs, signal, label: `Telegram ${method}` }
+        );
+      } catch (error) {
+        metrics?.observe('telegram_api_duration_seconds', (Date.now() - startedAt) / 1000, { method });
+        metrics?.increment('telegram_api_requests_total', {
+          method,
+          result: error?.code || 'network_error'
+        });
+        throw error;
+      }
+      const data = await response.json().catch(() => ({
+        ok: false,
+        error_code: response.status,
+        description: `HTTP ${response.status}`
+      }));
+      const durationSeconds = (Date.now() - startedAt) / 1000;
+      metrics?.observe('telegram_api_duration_seconds', durationSeconds, { method });
+      metrics?.increment('telegram_api_requests_total', {
+        method,
+        result: data.ok ? 'ok' : String(data.error_code || response.status || 'error')
+      });
+      if (data.ok) return data.result;
+
+      const error = new Error(`${method}: ${data.description || `HTTP ${response.status}`}`);
+      error.code = data.error_code || response.status;
+      const retryable = Number(error.code) === 429 || Number(error.code) >= 500;
+      if (!retryable || attempt >= telegramApiRetries) throw error;
+      const retryAfterMs = Number(data.parameters?.retry_after) > 0
+        ? Number(data.parameters.retry_after) * 1000
+        : Math.min(5_000, 250 * (2 ** attempt));
+      await waitWithSignal(retryAfterMs, signal);
+    }
+    throw new Error(`${method}: retry budget exhausted`);
   };
 
-  console.log('bot config', {
+  logger.log('bot config', {
     allowedChatIds: Array.from(allowedChatIds),
     stickerSetName,
     stickerSetOwnerConfigured: Boolean(stickerSetOwnerId),
@@ -148,39 +221,46 @@ export const createBotApp = ({
     if (!redis || !message?.message_id || !chatAllowed(message.chat?.id)) return;
     const key = `chat:${message.chat.id}:timeline`;
     const itemKey = `chat:${message.chat.id}:message:${message.message_id}`;
-    await redis.set(itemKey, messagePayload(message), { ex: cacheTtlSeconds });
-    await redis.lpush(key, String(message.message_id));
-    await redis.ltrim(key, 0, cacheLimit - 1);
-    await redis.expire(key, cacheTtlSeconds);
+    await redisCall('cache_message', async (client) => {
+      const pipeline = client.pipeline();
+      pipeline.set(itemKey, messagePayload(message), { ex: cacheTtlSeconds });
+      pipeline.lpush(key, String(message.message_id));
+      pipeline.ltrim(key, 0, cacheLimit - 1);
+      pipeline.expire(key, cacheTtlSeconds);
+      return pipeline.exec();
+    }, null);
   };
-
-  const getCachedMessage = async (chatId, messageId) =>
-    redis?.get(`chat:${chatId}:message:${messageId}`);
 
   const collectMessages = async (chatId, startId, count, beforeId) => {
     if (!redis) return [];
-    const messages = [];
-    const ids = await redis.lrange(`chat:${chatId}:timeline`, 0, cacheLimit - 1);
-    const selectedIds = Array.from(new Set(ids.map(Number)))
-      .filter((id) => id >= startId && id < beforeId)
-      .sort((a, b) => a - b);
-
-    for (const id of selectedIds) {
-      const message = await getCachedMessage(chatId, id);
-      if (message && !parseCommand(message)) messages.push(message);
-      if (messages.length >= count) break;
-    }
-    return messages;
+    return redisCall('collect_messages', async (client) => {
+      const ids = await client.lrange(`chat:${chatId}:timeline`, 0, cacheLimit - 1);
+      const selectedIds = Array.from(new Set(ids.map(Number)))
+        .filter((id) => id >= startId && id < beforeId)
+        .sort((a, b) => a - b);
+      if (!selectedIds.length) return [];
+      const values = await client.mget(...selectedIds.map((id) => `chat:${chatId}:message:${id}`));
+      return values.filter((message) => message && !parseCommand(message)).slice(0, count);
+    }, []);
   };
 
   const downloadTelegramFile = async (fileId) => {
     const file = await api('getFile', { file_id: fileId });
-    const response = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
+    const response = await fetchWithTimeout(
+      fetchImpl,
+      `https://api.telegram.org/file/bot${token}/${file.file_path}`,
+      {},
+      {
+        timeoutMs: telegramFileTimeoutMs,
+        signal: context.getStore()?.signal,
+        label: 'Telegram file download'
+      }
+    );
     if (!response.ok) throw new Error(`download failed: ${response.status}`);
     return Buffer.from(await response.arrayBuffer());
   };
 
-  const quoteRenderer = createQuoteRenderer({ api, downloadTelegramFile });
+  const quoteRenderer = createIsolatedQuoteRenderer({ env });
   const demotivationRenderer = createDemotivationRenderer();
   const stickerRenderer = createStickerRenderer();
 
@@ -250,7 +330,7 @@ export const createBotApp = ({
       chatId,
       knownUsers,
       onError: (method, details, error) => {
-        console.error(`${method} failed`, { ...details, error: error.message });
+        logger.error(`${method} failed`, { ...details, error: error.message });
       }
     });
     users.sort((left, right) => String(left.id).localeCompare(String(right.id), 'en', { numeric: true }));
@@ -294,11 +374,11 @@ export const createBotApp = ({
       return;
     }
 
-    const fileId = replyImageFileId(message.reply_to_message);
-    if (!fileId) {
+    const source = replyDemotivationSource(message.reply_to_message);
+    if (!source) {
       await sendMessage(
         chatId,
-        'Ответь командой на фото, картинку-файл или статический стикер. Из воздуха рамку не заполню.',
+        'Ответь командой на фото, картинку-файл, статический стикер или видеокружок. Из воздуха рамку не заполню.',
         message.message_id
       );
       return;
@@ -306,25 +386,61 @@ export const createBotApp = ({
 
     try {
       await api('sendChatAction', { chat_id: chatId, action: 'upload_photo' });
+      const sourceBuffer = await downloadTelegramFile(source.fileId);
+      const imageBuffer = source.kind === 'video_note'
+        ? await demotivationFrameExtractor.extractFirstFrame(sourceBuffer, {
+          signal: context.getStore()?.signal
+        })
+        : sourceBuffer;
       const rendered = await demotivationRenderer.renderJpeg(
-        await downloadTelegramFile(fileId),
+        imageBuffer,
         text
       );
       await sendBuffer('sendPhoto', chatId, 'photo', 'demotivation.jpg', rendered, {
         reply_to_message_id: message.message_id
       });
     } catch (error) {
-      console.error('demotivation render failed', { chatId, fileId, error });
+      logger.error('demotivation render failed', {
+        chatId,
+        fileId: source.fileId,
+        sourceKind: source.kind,
+        error
+      });
       await sendMessage(
         chatId,
-        'Не смог собрать демотиватор из этой картинки. Попробуй другое изображение.',
+        'Не смог собрать демотиватор из этого изображения или видеокружка. Попробуй другой исходник.',
         message.message_id
       );
     }
   };
 
   const sendQuote = async (chatId, commandMessage, messages) => {
-    const sticker = await quoteRenderer.renderStickerWebp(messages);
+    const startedAt = Date.now();
+    let sticker;
+    try {
+      sticker = await quoteRenderer.renderStickerWebp(messages, {
+        signal: context.getStore()?.signal
+      });
+      metrics?.increment('quote_renders_total', { result: 'ok' });
+    } catch (error) {
+      metrics?.increment('quote_renders_total', { result: error?.code || 'error' });
+      logger.error('quote render failed', {
+        chatId,
+        messageId: commandMessage.message_id,
+        durationMs: Date.now() - startedAt,
+        code: error?.code,
+        error: error?.message || String(error)
+      });
+      if (context.getStore()?.signal?.aborted) throw error;
+      await sendMessage(
+        chatId,
+        'Не смог отрендерить цитату вовремя. Процесс прибил, очередь дальше не держу — попробуй ещё раз попроще.',
+        commandMessage.message_id
+      );
+      return;
+    } finally {
+      metrics?.observe('quote_render_duration_seconds', (Date.now() - startedAt) / 1000);
+    }
     await sendBuffer('sendSticker', chatId, 'sticker', 'quote.webp', sticker, {
       reply_to_message_id: commandMessage.message_id
     });
@@ -342,45 +458,55 @@ export const createBotApp = ({
     for (const url of urls) {
       try {
         await api('sendChatAction', { chat_id: message.chat.id, action: 'upload_video' });
-        const video = await mediaDownloader.downloadVideo(url);
+        const video = await mediaDownloader.downloadVideo(url, {
+          signal: context.getStore()?.signal
+        });
         await sendBuffer('sendVideo', message.chat.id, 'video', video.filename, video.buffer, {
           reply_to_message_id: message.message_id,
           supports_streaming: true
         });
       } catch (error) {
-        console.error('media download failed', { url, code: error?.code, error });
+        logger.error('media download failed', { url, code: error?.code, error });
         await sendMessage(message.chat.id, mediaErrorText(error), message.message_id);
       }
     }
   };
 
-  const stickerInputFormValue = (name, emojis = '💬') =>
-    JSON.stringify({
-      sticker: `attach://${name}`,
-      emoji_list: [emojis],
-      format: 'static'
-    });
-
   const isMissingStickerSetError = (error) =>
     /sticker set not found|stickerset_invalid|stickers? set .* not found/i.test(error?.message || '');
 
-  const saveStickerBuffer = async (chatId, fromUserId, commandMessage, sticker) => {
+  const stickerSetConfigured = async (chatId, commandMessage) => {
     if (!stickerSetName) {
       await sendMessage(chatId, 'Стикерпак не настроен, пиздец. Позовите админа этого цирка.', commandMessage.message_id);
-      return;
+      return false;
     }
+    return true;
+  };
 
-    const ownerUserId = stickerSetOwnerId || fromUserId;
+  const uploadStickerBuffer = async (ownerUserId, sticker) => {
     const form = new FormData();
     form.append('user_id', String(ownerUserId));
-    form.append('name', stickerSetName);
-    form.append('sticker', stickerInputFormValue('sticker_file'));
-    form.append('sticker_file', new Blob([sticker]), 'sticker.webp');
+    form.append('sticker_format', 'static');
+    form.append('sticker', new Blob([sticker], { type: 'image/webp' }), 'sticker.webp');
+    const uploaded = await api('uploadStickerFile', form, { formData: true });
+    if (!uploaded?.file_id) throw new Error('uploadStickerFile returned no file_id');
+    return uploaded.file_id;
+  };
+
+  const saveStickerReference = async (chatId, fromUserId, commandMessage, stickerFileId) => {
+    if (!await stickerSetConfigured(chatId, commandMessage)) return;
+
+    const ownerUserId = stickerSetOwnerId || fromUserId;
+    const sticker = staticStickerInput(stickerFileId);
 
     try {
-      await api('addStickerToSet', form, { formData: true });
+      await api('addStickerToSet', {
+        user_id: ownerUserId,
+        name: stickerSetName,
+        sticker
+      });
     } catch (error) {
-      console.error('addStickerToSet failed', {
+      logger.error('addStickerToSet failed', {
         stickerSetName,
         ownerUserId: String(ownerUserId),
         commandUserId: String(fromUserId),
@@ -392,17 +518,12 @@ export const createBotApp = ({
         return;
       }
 
-      const createForm = new FormData();
-      createForm.append('user_id', String(ownerUserId));
-      createForm.append('name', stickerSetName);
-      createForm.append('title', stickerSetTitle);
-      createForm.append('stickers', JSON.stringify([{
-        sticker: 'attach://sticker',
-        emoji_list: ['💬'],
-        format: 'static'
-      }]));
-      createForm.append('sticker', new Blob([sticker]), 'sticker.webp');
-      await api('createNewStickerSet', createForm, { formData: true });
+      await api('createNewStickerSet', {
+        user_id: ownerUserId,
+        name: stickerSetName,
+        title: stickerSetTitle,
+        stickers: [sticker]
+      });
     }
 
     await sendMessage(
@@ -411,6 +532,30 @@ export const createBotApp = ({
       commandMessage.message_id,
       { parse_mode: 'Markdown', disable_web_page_preview: true }
     );
+  };
+
+  const saveStickerBuffer = async (chatId, fromUserId, commandMessage, sticker) => {
+    if (!await stickerSetConfigured(chatId, commandMessage)) return;
+
+    const ownerUserId = stickerSetOwnerId || fromUserId;
+    let stickerFileId;
+    try {
+      stickerFileId = await uploadStickerBuffer(ownerUserId, sticker);
+    } catch (error) {
+      logger.error('uploadStickerFile failed', {
+        ownerUserId: String(ownerUserId),
+        commandUserId: String(fromUserId),
+        error: error.message
+      });
+      await sendMessage(
+        chatId,
+        'Не смог подготовить фотографию для стикерпака. В логах сохранил причину.',
+        commandMessage.message_id
+      );
+      return;
+    }
+
+    await saveStickerReference(chatId, fromUserId, commandMessage, stickerFileId);
   };
 
   const saveQuotedSticker = async (chatId, fromUserId, commandMessage) => {
@@ -424,7 +569,7 @@ export const createBotApp = ({
           await downloadTelegramFile(photoFileId)
         );
       } catch (error) {
-        console.error('photo sticker render failed', { chatId, photoFileId, error });
+        logger.error('photo sticker render failed', { chatId, photoFileId, error });
         await sendMessage(
           chatId,
           'Не смог превратить это фото в стикер. Попробуй другую фотографию.',
@@ -444,7 +589,7 @@ export const createBotApp = ({
       return;
     }
 
-    await saveStickerBuffer(chatId, fromUserId, commandMessage, await downloadTelegramFile(sticker.file_id));
+    await saveStickerReference(chatId, fromUserId, commandMessage, sticker.file_id);
   };
 
   const deleteSticker = async (chatId, commandMessage) => {
@@ -554,12 +699,12 @@ export const createBotApp = ({
     return false;
   };
 
-  const handleUpdate = async (update) => {
+  const handleUpdateInner = async (update) => {
     const message = update.message || update.edited_message;
     if (!message) return;
 
     if (!chatAllowed(message.chat?.id)) {
-      console.log('ignored chat', {
+      logger.log('ignored chat', {
         id: message.chat?.id,
         title: message.chat?.title,
         type: message.chat?.type,
@@ -579,7 +724,9 @@ export const createBotApp = ({
         await sendMessage(message.chat.id, 'Итоги дня пока не настроены. Нужны PostgreSQL и OPENAI_API_KEY.', message.message_id);
         return;
       }
-      const text = await dailySummary.summaryText(message.chat.id, summaryDay);
+      const text = await dailySummary.summaryText(message.chat.id, summaryDay, {
+        signal: context.getStore()?.signal
+      });
       await sendLongMessage(message.chat.id, text, message.message_id, { disable_web_page_preview: true });
       return;
     }
@@ -589,8 +736,42 @@ export const createBotApp = ({
       await analytics?.ingestMessage(message);
       const guessText = await analytics?.checkCodewordGuess(message);
       if (guessText) await sendMessage(message.chat.id, guessText, message.message_id);
+      if (classifyUpdateLane(update) === 'heavy' && rateLimiter) {
+        const limit = rateLimiter.consume({
+          chatId: message.chat.id,
+          userId: message.from?.id,
+          kind: 'heavy'
+        });
+        if (!limit.allowed) {
+          metrics?.increment('bot_rate_limited_total', { kind: 'heavy' });
+          await sendMessage(
+            message.chat.id,
+            `Слишком много тяжёлых запросов. Подожди ${limit.retryAfterSeconds} сек.`,
+            message.message_id
+          );
+          return;
+        }
+      }
       await handleMediaLinks(message);
       return;
+    }
+
+    if (rateLimiter) {
+      const kind = classifyUpdateLane(update) === 'heavy' ? 'heavy' : 'command';
+      const limit = rateLimiter.consume({
+        chatId: message.chat.id,
+        userId: message.from?.id,
+        kind
+      });
+      if (!limit.allowed) {
+        metrics?.increment('bot_rate_limited_total', { kind });
+        await sendMessage(
+          message.chat.id,
+          `Слишком часто. Подожди ${limit.retryAfterSeconds} сек.`,
+          message.message_id
+        );
+        return;
+      }
     }
 
     await analytics?.rememberParticipants?.(message);
@@ -618,6 +799,9 @@ export const createBotApp = ({
     if (await handleBirthdayCommand(message, command)) return;
     if (analytics && await handleAnalyticsCommand(message, command)) return;
   };
+
+  const handleUpdate = (update, executionContext = {}) =>
+    context.run(executionContext, () => handleUpdateInner(update));
 
   return { api, chatAllowed, handleUpdate };
 };

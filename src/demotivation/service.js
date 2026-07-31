@@ -11,22 +11,32 @@ export const demotivationFontSize = (text) => {
   return 42;
 };
 
-export const replyImageFileId = (reply) => {
+export const replyDemotivationSource = (reply) => {
   if (reply?.photo?.length) {
-    return reply.photo.reduce((largest, current) => {
+    const photo = reply.photo.reduce((largest, current) => {
       const largestArea = Number(largest.width || 0) * Number(largest.height || 0);
       const currentArea = Number(current.width || 0) * Number(current.height || 0);
       return currentArea >= largestArea ? current : largest;
-    }).file_id;
+    });
+    return { fileId: photo.file_id, kind: 'image' };
   }
 
   if (reply?.document?.file_id && /^image\//i.test(reply.document.mime_type || '')) {
-    return reply.document.file_id;
+    return { fileId: reply.document.file_id, kind: 'image' };
   }
 
   if (reply?.sticker?.file_id && !reply.sticker.is_animated && !reply.sticker.is_video) {
-    return reply.sticker.file_id;
+    return { fileId: reply.sticker.file_id, kind: 'image' };
+  }
+
+  if (reply?.video_note?.file_id) {
+    return { fileId: reply.video_note.file_id, kind: 'video_note' };
   }
 
   return null;
+};
+
+export const replyImageFileId = (reply) => {
+  const source = replyDemotivationSource(reply);
+  return source?.kind === 'image' ? source.fileId : null;
 };

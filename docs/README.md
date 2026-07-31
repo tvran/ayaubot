@@ -2,7 +2,7 @@
 
 AyauBot — Telegram-бот для групповых чатов. Он превращает сообщения в статические WebP-стикеры и демотиваторы, скачивает Instagram Reels и TikTok-видео, зовёт известных участников чата, ведёт статистику слов, запускает игры, напоминает о днях рождения и ежедневно выбирает случайного участника чата.
 
-Проект написан на Node.js в формате ES modules и может работать как Vercel Function или как обычный HTTP-сервер.
+Проект написан на Node.js в формате ES modules. Webhook работает как Vercel Function или обычный HTTP-сервер, а команды выполняет отдельный worker через надёжную PostgreSQL-очередь.
 
 ## Карта документации
 
@@ -11,6 +11,7 @@ AyauBot — Telegram-бот для групповых чатов. Он прев�
 | [Архитектура](architecture.md) | Границы компонентов, зависимости и основные потоки данных |
 | [Настройка и эксплуатация](setup-and-operations.md) | Переменные окружения, локальный запуск, webhook, Vercel и диагностика |
 | [Входные точки](components/entrypoints.md) | Vercel handler, Node.js HTTP-сервер и скрипт регистрации webhook |
+| [Webhook queue](components/webhook-queue.md) | Идемпотентность, lanes, retries, dead-letter и worker concurrency |
 | [Приложение бота](components/bot-app.md) | Разбор команд, Telegram Bot API, кеш сообщений и стикерпаки |
 | [Аналитика и игры](components/analytics.md) | Токенизация, статистика, кодовое слово и ежедневный выбор |
 | [Игра Percent](components/percent-game.md) | Настраиваемые параметры, шаблоны ответов и суточный Redis-кеш |
@@ -23,15 +24,17 @@ AyauBot — Telegram-бот для групповых чатов. Он прев�
 
 ## Быстрый старт
 
-Требуется Node.js с глобальными `fetch`, `FormData` и `Blob` (на практике Node.js 18+), Telegram-бот и доступный извне HTTPS URL. Для загрузки Reels/TikTok также нужны исполняемые `yt-dlp` и `ffmpeg`.
+Требуется Node.js с глобальными `fetch`, `FormData` и `Blob` (на практике Node.js 18+), Telegram-бот и доступный извне HTTPS URL. Для загрузки Reels/TikTok нужен `yt-dlp`, а для media-загрузок и первого кадра видеокружка — исполняемый `ffmpeg`.
 
 ```bash
 npm install
 cp .env.example .env
+npm run migrate
 npm start
+npm run worker
 ```
 
-Локальный сервер принимает обновления по `POST /telegram/webhook`, а Vercel-функция — по `POST /api/telegram`. Перед регистрацией webhook заполните как минимум `BOT_TOKEN`, `WEBHOOK_SECRET` и `APP_URL`, затем выполните:
+Локальный web-сервис принимает обновления по `POST /telegram/webhook`, а Vercel-функция — по `POST /api/telegram`. Оба только ставят update в PostgreSQL-очередь, поэтому `DATABASE_URL` и миграция обязательны. Перед регистрацией webhook заполните `BOT_TOKEN`, `WEBHOOK_SECRET` и `APP_URL`, затем выполните:
 
 ```bash
 npm run set-webhook
@@ -47,7 +50,7 @@ npm run set-webhook
 | `/q 2` … `/q 10` | Включить в цитату до 10 последовательных сообщений |
 | `/qs` | Сохранить созданный ботом статический стикер или reply-фото в групповой стикерпак |
 | `/qd` | Удалить стикер, на который отвечает команда, из его набора |
-| `/demotivation <текст>` | Создать демотиватор из изображения, на которое отвечает команда |
+| `/demotivation <текст>` | Создать демотиватор из reply-изображения или первого кадра видеокружка |
 | `/all` | Упомянуть всех известных боту действующих участников чата, кроме ботов |
 | `/top`, `/topwords` | Показать пять самых частых слов за последние 14 дней |
 | `/pidor` | Получить детерминированный на текущий день случайный выбор участника |
@@ -72,19 +75,28 @@ npm run set-webhook
 
 ```text
 api/telegram.js              Vercel webhook
+migrations/                  версионированные SQL-миграции
+scripts/migrate.js           применение PostgreSQL-миграций
 scripts/set-webhook.js       регистрация webhook в Telegram
-src/server/index.js          самостоятельный HTTP-сервер
+src/server/index.js          быстрый HTTP ingress
+src/worker/index.js          обработчик очереди и scheduler
+src/webhook/ingress.js       постановка Telegram update в очередь
+src/queue/                   PostgreSQL queue, классификация и worker loops
+src/observability/metrics.js внутренние Prometheus-метрики
 src/bot/app.js               оркестрация Telegram-команд
 src/bot/mentions.js          проверка участников и построение упоминаний
 src/analytics/tokenize.js    нормализация и токенизация текста
 src/analytics/service.js     аналитика и игровые сценарии
 src/birthday/service.js      дни рождения и фоновые напоминания
+src/demotivation/frame.js    извлечение первого кадра видеокружка через ffmpeg
 src/demotivation/service.js  проверка reply и текста демотиватора
 src/sticker/service.js       выбор фотографии для `/qs`
 src/db/postgres.js           схема и запросы PostgreSQL
 src/games/percent.js         настраиваемая процентная игра
 src/media/service.js         загрузка Reels/TikTok через yt-dlp
 src/render/demotivation.js   рендер демотиватора в JPEG
+src/render/isolated-quote.js запуск и принудительная отмена `/q` child process
+src/render/quote-child.js    изолированный production-процесс рендера цитаты
 src/render/quote.js          построение и растеризация цитат
 src/render/sticker.js        прямое преобразование фото в WebP-стикер
 src/render/theme.js          визуальные константы
@@ -93,7 +105,9 @@ config/percent-game.json     параметры и фразы процентно
 test/percent-game.test.js    тесты суточного результата и выбора игрока
 test/media-service.test.js   тесты загрузчика внешних видео
 test/birthday-service.test.js тесты дат и планировщика дней рождения
+test/demotivation-frame.test.js тесты ffmpeg-контракта первого кадра
 test/demotivation.test.js    тесты текста и выбора reply-изображения
+test/isolated-quote.test.js  тесты process isolation, timeout и cancellation `/q`
 test/sticker-service.test.js тесты выбора reply-фотографии для `/qs`
 test/mentions.test.js        тесты отбора участников и Telegram entities
 vercel.json                  лимит выполнения Vercel Function

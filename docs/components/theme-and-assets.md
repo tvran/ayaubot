@@ -54,7 +54,8 @@
 
 Bold italic entity фактически запрашивает weight 800 italic, хотя отдельного такого font face нет; итоговый выбор/синтез выполняет Satori.
 
+Демотиваторы не используют эти пять файлов. Для Times New Roman-совместимой подписи `src/render/demotivation.js` загружает Cyrillic и Latin WOFF subsets Tinos Bold из runtime-зависимости `@fontsource/tinos`. Tinos распространяется по SIL Open Font License 1.1 и обеспечивает переносимый serif-рендер в Railway без системного коммерческого файла Times New Roman.
+
 ## Изменение внешнего вида
 
 После изменения чисел темы достаточно перезапустить приложение: build step отсутствует. При изменении размеров стоит проверить короткий и длинный текст, нескольких авторов, caption с фото, стикер и video note. Автоматических snapshot-тестов в проекте нет.
-

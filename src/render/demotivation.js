@@ -1,10 +1,20 @@
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { createRequire } from 'node:module';
 import satori from 'satori';
 import sharp from 'sharp';
 import { demotivationFontSize } from '../demotivation/service.js';
 
-const boldFont = readFileSync(join(process.cwd(), 'assets/fonts/NotoSans-Bold.ttf'));
+const require = createRequire(import.meta.url);
+const timesNewRomanFonts = [
+  {
+    name: 'Times New Roman Cyrillic',
+    data: readFileSync(require.resolve('@fontsource/tinos/files/tinos-cyrillic-700-normal.woff'))
+  },
+  {
+    name: 'Times New Roman Latin',
+    data: readFileSync(require.resolve('@fontsource/tinos/files/tinos-latin-700-normal.woff'))
+  }
+];
 
 const canvas = { width: 1084, height: 1200 };
 const frame = {
@@ -32,7 +42,7 @@ const template = (text) => element('div', {
   width: '100%',
   height: '100%',
   backgroundColor: '#000000',
-  fontFamily: 'Noto Sans'
+  fontFamily: 'Times New Roman Cyrillic, Times New Roman Latin'
 }, [
   element('div', {
     position: 'absolute',
@@ -73,7 +83,11 @@ export const createDemotivationRenderer = () => ({
     const [svg, stretchedImage] = await Promise.all([
       satori(template(text), {
         ...canvas,
-        fonts: [{ name: 'Noto Sans', data: boldFont, weight: 700, style: 'normal' }]
+        fonts: timesNewRomanFonts.map((font) => ({
+          ...font,
+          weight: 700,
+          style: 'normal'
+        }))
       }),
       sharp(imageBuffer)
         .rotate()

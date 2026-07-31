@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   demotivationFontSize,
   normalizeDemotivationText,
+  replyDemotivationSource,
   replyImageFileId
 } from '../src/demotivation/service.js';
 
@@ -31,4 +32,12 @@ test('accepts image documents and static stickers only', () => {
   assert.equal(replyImageFileId({ sticker: { file_id: 'animated', is_animated: true } }), null);
   assert.equal(replyImageFileId({ sticker: { file_id: 'video', is_video: true } }), null);
   assert.equal(replyImageFileId(null), null);
+});
+
+test('recognizes a video note as a first-frame demotivation source', () => {
+  assert.deepEqual(
+    replyDemotivationSource({ video_note: { file_id: 'video-note' } }),
+    { fileId: 'video-note', kind: 'video_note' }
+  );
+  assert.equal(replyImageFileId({ video_note: { file_id: 'video-note' } }), null);
 });
