@@ -109,6 +109,11 @@ const inputForMessages = (messages) => messages
   .map((message) => `[${message.message_id}] ${message.text}`)
   .join('\n');
 
+const outputTextFor = (response) => response.output_text || response.output
+  ?.flatMap((item) => item.content || [])
+  .find((item) => item.type === 'output_text')
+  ?.text;
+
 export const createDailySummaryService = ({ db, env = process.env, fetchImpl = fetch } = {}) => {
   const apiKey = env.OPENAI_API_KEY;
   const timeoutMs = Math.max(1_000, Number(env.OPENAI_TIMEOUT_MS) || 45_000);
@@ -159,7 +164,10 @@ export const createDailySummaryService = ({ db, env = process.env, fetchImpl = f
     const data = await response.json();
     if (!response.ok) throw new Error(data.error?.message || 'OpenAI request failed');
 
-    const summary = JSON.parse(data.output_text);
+    const outputText = outputTextFor(data);
+    if (!outputText) throw new Error('OpenAI returned an empty daily summary');
+
+    const summary = JSON.parse(outputText);
     const text = renderSummary(chatId, day, summary);
     await db.saveDailySummary(chatId, day, text);
     return text;
