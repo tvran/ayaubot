@@ -10,8 +10,12 @@ test('reads JSON output from the Responses API output content', async () => {
       async messagesForDay() {
         return Array.from({ length: 5 }, (_, index) => ({
           message_id: index + 1,
+          user_id: 42,
           text: `Сообщение ${index + 1}`
         }));
+      },
+      async usersForChat() {
+        return [{ user_id: 42, first_name: 'Саня', username: 'sanya' }];
       },
       async saveDailySummary(chatId, day, text) { saved = { chatId, day, text }; }
     },
@@ -23,7 +27,7 @@ test('reads JSON output from the Responses API output content', async () => {
           type: 'output_text',
           text: JSON.stringify({
             headline: 'Короткий итог',
-            topics: [],
+            topics: [{ text: '@sanya устроил короткий итог' }],
             decisions: [],
             recommendations: []
           })
@@ -35,6 +39,7 @@ test('reads JSON output from the Responses API output content', async () => {
   const text = await service.summaryText(-100123, '2026-08-06');
 
   assert.match(text, /Короткий итог/);
+  assert.match(text, /@sanya/);
   assert.doesNotMatch(text, /t\.me\/c/);
   assert.doesNotMatch(text, /Ссылки из чата/);
   assert.equal(saved.chatId, -100123);

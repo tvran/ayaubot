@@ -2,7 +2,7 @@ import { fetchWithTimeout } from '../runtime/fetch.js';
 
 const timeZone = 'Asia/Almaty';
 const summaryModel = 'gpt-5.4-mini';
-const summaryFormatVersion = 2;
+const summaryFormatVersion = 3;
 
 const dateFormatter = new Intl.DateTimeFormat('en-CA', {
   timeZone,
@@ -78,9 +78,19 @@ const renderSummary = (day, summary) => [
   ...formatSection('на заметку', summary.recommendations, (item) => `• ${item.text}`)
 ].join('\n').trim();
 
-const inputForMessages = (messages) => messages
-  .map((message) => `[${message.message_id}] ${message.text}`)
+const authorLabel = (user) => {
+  if (!user) return 'кто-то';
+  if (user.username) return `@${user.username}`;
+  return [user.first_name, user.last_name].filter(Boolean).join(' ') || 'кто-то';
+};
+
+const inputForMessages = (messages, users) => {
+  const usersById = new Map(users.map((user) => [String(user.user_id), user]));
+
+  return messages
+  .map((message) => `[${message.message_id}] ${authorLabel(usersById.get(String(message.user_id)))}: ${message.text}`)
   .join('\n');
+};
 
 const outputTextFor = (response) => response.output_text || response.output
   ?.flatMap((item) => item.content || [])
@@ -100,6 +110,7 @@ export const createDailySummaryService = ({ db, env = process.env, fetchImpl = f
 
     const messages = await db.messagesForDay(chatId, day);
     if (messages.length < 5) return 'За этот день пока слишком мало сообщений для нормального итога. Дайте чату немного пожить.';
+    const users = await db.usersForChat(chatId);
 
     const response = await fetchWithTimeout(
       fetchImpl,
@@ -115,11 +126,11 @@ export const createDailySummaryService = ({ db, env = process.env, fetchImpl = f
           input: [
             {
               role: 'system',
-              content: 'Ты собираешь итоги живого Telegram-чата как нормальный участник, а не корпоративный бот. Пиши по-русски коротко, естественно и без канцелярита. Используй только факты из сообщений; не додумывай решения, рекомендации, имена или события. Игнорируй команды бота, рекламу и бессмысленный флуд. headline — одна живая фраза про вайб дня. topics — максимум 3 действительно заметные темы. decisions — только конкретные договорённости или незакрытые вопросы. recommendations — только реальные советы, места, фильмы, музыка или полезные штуки; не превращай сюда шутки, сплетни и случайные реплики. Если раздел пустой — верни пустой массив. Текст каждого пункта до 180 символов. Не добавляй ссылки, цитаты, заголовки или markdown в текст пунктов.'
+              content: 'Ты собираешь итоги живого Telegram-чата как нормальный участник, а не корпоративный бот. Пиши по-русски коротко, естественно и без канцелярита. Используй только факты из сообщений; не додумывай решения, рекомендации, имена или события. Игнорируй команды бота, рекламу и бессмысленный флуд. headline — одна живая фраза про вайб дня. topics — максимум 3 действительно заметные темы. В каждом пункте называй 1–3 людей, которые реально вели разговор, если они есть в сообщениях: используй @username или имя ровно как указано перед двоеточием в строке сообщения. Не пиши обезличенное «обсуждали» или «один из участников», когда можно назвать человека. Не упоминай человека, если он ничего не внёс в тему. decisions — только конкретные договорённости или незакрытые вопросы. recommendations — только реальные советы, места, фильмы, музыка или полезные штуки; не превращай сюда шутки, сплетни и случайные реплики. Если раздел пустой — верни пустой массив. Текст каждого пункта до 180 символов. Не добавляй ссылки, цитаты, заголовки или markdown в текст пунктов.'
             },
             {
               role: 'user',
-              content: `Составь итог дня ${day}. Сообщения:\n\n${inputForMessages(messages)}`
+              content: `Составь итог дня ${day}. Сообщения:\n\n${inputForMessages(messages, users)}`
             }
           ],
           text: {
