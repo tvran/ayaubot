@@ -15,16 +15,14 @@ const closeAfterMs = 15 * 60 * 1000;
 const votesToClose = 6;
 
 const label = (user) => user.username ? `@${user.username}` : [user.first_name, user.last_name].filter(Boolean).join(' ') || 'кто-то';
-const keyboard = (session) => ({ inline_keyboard: session.options.map((option) => ([{
-  text: `${option.label} — ${option.votes || 0}`,
-  callback_data: `court:${session.id}:${option.user_id}`
-}])) });
-const text = (session, closed = false) => [
-  closed ? 'суд дня вынес вердикт' : 'суд дня открыт',
+const resultText = (session) => [
+  'суд дня вынес вердикт',
   '',
   session.question,
   '',
-  closed ? `голосов: ${session.total_votes}` : `голосование закроется на 6-м голосе или через 15 минут`
+  `голосов: ${session.total_votes}`,
+  '',
+  ...session.options.map((option) => `• ${option.label} — ${option.votes}`)
 ].join('\n');
 
 export const createCourtService = ({ db, env = process.env, fetchImpl = fetch, now = () => new Date() } = {}) => {
@@ -52,7 +50,7 @@ export const createCourtService = ({ db, env = process.env, fetchImpl = fetch, n
     return result.rows[0] || null;
   };
 
-  const start = async (chatId, sendMessage) => {
+  const start = async (chatId, sendPoll) => {
     const today = now().toISOString().slice(0, 10);
     const existing = await pool.query('select id from court_sessions where chat_id=$1 and day=$2::date', [chatId, today]);
     if (existing.rows[0]) return { existing: await session(existing.rows[0].id) };
@@ -64,8 +62,8 @@ export const createCourtService = ({ db, env = process.env, fetchImpl = fetch, n
     const id = created.rows[0].id;
     await Promise.all(candidates.rows.map((user) => pool.query('insert into court_options (session_id, user_id, label) values ($1, $2, $3)', [id, user.user_id, label(user)])));
     const open = await session(id);
-    const message = await sendMessage(chatId, text(open), { reply_markup: keyboard(open) });
-    await pool.query('update court_sessions set message_id=$2 where id=$1', [id, message.message_id]);
+    const message = await sendPoll(chatId, open.question, open.options.map((option) => option.label));
+    await pool.query('update court_sessions set message_id=$2, poll_id=$3 where id=$1', [id, message.message_id, message.poll.id]);
     return { session: open };
   };
 
@@ -86,10 +84,18 @@ export const createCourtService = ({ db, env = process.env, fetchImpl = fetch, n
     } catch (error) { await client.query('rollback'); throw error; } finally { client.release(); }
   };
 
-  const closeExpired = async (editMessage) => {
-    const expired = await pool.query("update court_sessions set status='closed' where status='open' and closes_at <= now() returning id");
-    for (const row of expired.rows) { const item = await session(row.id); await editMessage(item.chat_id, item.message_id, text(item, true)); }
+  const votePoll = async ({ pollId, voterId, optionIds }) => {
+    const found = await pool.query('select id from court_sessions where poll_id=$1', [pollId]);
+    if (!found.rows[0] || optionIds.length !== 1) return { ignored: true };
+    const item = await session(found.rows[0].id);
+    const result = await vote({ id: item.id, voterId, optionId: item.options[optionIds[0]]?.user_id });
+    return { ...result, session: await session(item.id) };
   };
 
-  return { start, session, vote, closeExpired, refreshQuestionBank: loadBank, text, keyboard };
+  const closeExpired = async (finish) => {
+    const expired = await pool.query("update court_sessions set status='closed' where status='open' and closes_at <= now() returning id");
+    for (const row of expired.rows) { const item = await session(row.id); await finish(item); }
+  };
+
+  return { start, session, votePoll, closeExpired, refreshQuestionBank: loadBank, resultText };
 };

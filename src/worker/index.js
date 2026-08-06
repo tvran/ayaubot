@@ -68,7 +68,10 @@ const stopBirthdayScheduler = birthdays.startScheduler({
 });
 
 const courtScheduler = setInterval(() => {
-  court.closeExpired((chatId, messageId, text) => bot.api('editMessageText', { chat_id: chatId, message_id: messageId, text }))
+  court.closeExpired(async (item) => {
+    await bot.api('stopPoll', { chat_id: item.chat_id, message_id: item.message_id });
+    await bot.api('sendMessage', { chat_id: item.chat_id, text: court.resultText(item), reply_to_message_id: item.message_id });
+  })
     .catch((error) => console.error('court scheduler failed', error));
 }, 30_000);
 courtScheduler.unref?.();

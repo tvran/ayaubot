@@ -21,7 +21,7 @@ export const classifyUpdateLane = (update = {}) => {
 export const updateQueueRecord = (update = {}) => {
   const message = updateMessage(update) || update.callback_query?.message;
   const updateId = Number(update.update_id);
-  const chatId = Number(message?.chat?.id);
+  const chatId = Number(message?.chat?.id || (update.poll_answer ? 0 : NaN));
   if (!Number.isSafeInteger(updateId) || !Number.isSafeInteger(chatId)) return null;
   return {
     updateId,

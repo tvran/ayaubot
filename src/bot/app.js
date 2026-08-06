@@ -703,12 +703,12 @@ export const createBotApp = ({
 
   const handleUpdateInner = async (update) => {
     const callback = update.callback_query;
-    if (callback?.data?.startsWith('court:')) {
-      const [, id, optionId] = callback.data.split(':');
-      const result = await court?.vote({ id: Number(id), voterId: callback.from?.id, optionId: Number(optionId) });
-      await api('answerCallbackQuery', { callback_query_id: callback.id, text: result?.duplicate ? 'Ты уже проголосовал.' : 'голос учтён' });
-      const item = await court?.session(Number(id));
-      if (item && result?.closed) await api('editMessageText', { chat_id: item.chat_id, message_id: item.message_id, text: court.text(item, true) });
+    if (update.poll_answer && court) {
+      const result = await court.votePoll({ pollId: update.poll_answer.poll_id, voterId: update.poll_answer.user.id, optionIds: update.poll_answer.option_ids });
+      if (result?.closed && result.session) {
+        await api('stopPoll', { chat_id: result.session.chat_id, message_id: result.session.message_id });
+        await sendMessage(result.session.chat_id, court.resultText(result.session), result.session.message_id);
+      }
       return;
     }
     const message = update.message || update.edited_message;
@@ -744,7 +744,7 @@ export const createBotApp = ({
     const command = parseCommand(message);
 
     if (command?.name === 'court') {
-      const result = await court?.start(message.chat.id, (chatId, text, extra) => sendMessage(chatId, text, message.message_id, extra));
+      const result = await court?.start(message.chat.id, (chatId, question, options) => api('sendPoll', { chat_id: chatId, question, options, is_anonymous: false }));
       if (result?.error) await sendMessage(message.chat.id, result.error, message.message_id);
       if (result?.existing) await sendMessage(message.chat.id, 'Суд дня уже идёт или уже состоялся.', message.message_id);
       return;
