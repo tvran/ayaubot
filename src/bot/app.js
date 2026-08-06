@@ -70,6 +70,7 @@ const buildHelpText = (percentCommand = 'percent') => [
   '/spam — кто больше всех написал сообщений за всё время',
   '#итогидня — краткий AI-итог сообщений за сегодня',
   '/court — абсурдный суд дня: один запуск на чат в сутки',
+  '/court_next — закрыть этот суд и вытащить другой вопрос',
   '/pidor — выбираю подозреваемого дня, строго без бота, я не участвую в этом цирке',
   '/pidor_list — история выборов',
   '/pidor_reset — сбросить выбор на сегодня',
@@ -743,8 +744,9 @@ export const createBotApp = ({
     }
     const command = parseCommand(message);
 
-    if (command?.name === 'court') {
-      const result = await court?.start(message.chat.id, (chatId, question, options) => api('sendPoll', { chat_id: chatId, question, options, is_anonymous: false }));
+    if (command?.name === 'court' || command?.name === 'court_next') {
+      const result = await court?.start(message.chat.id, (chatId, question, options) => api('sendPoll', { chat_id: chatId, question, options, is_anonymous: false }), { reroll: command.name === 'court_next' });
+      if (result?.replaced?.message_id) await api('stopPoll', { chat_id: result.replaced.chat_id, message_id: result.replaced.message_id });
       if (result?.error) await sendMessage(message.chat.id, result.error, message.message_id);
       if (result?.existing) await sendMessage(message.chat.id, 'Суд дня уже идёт или уже состоялся.', message.message_id);
       return;

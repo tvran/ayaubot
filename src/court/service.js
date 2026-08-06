@@ -14,7 +14,11 @@ const bankRefreshMs = 14 * 24 * 60 * 60 * 1000;
 const closeAfterMs = 15 * 60 * 1000;
 const votesToClose = 6;
 
-const label = (user) => user.username ? `@${user.username}` : [user.first_name, user.last_name].filter(Boolean).join(' ') || 'кто-то';
+const label = (user) => {
+  const name = [user.first_name, user.last_name].filter(Boolean).join(' ');
+  if (name && user.username) return `${name} (@${user.username})`;
+  return name || (user.username ? `@${user.username}` : 'кто-то');
+};
 const resultText = (session) => [
   'суд дня вынес вердикт',
   '',
@@ -50,21 +54,23 @@ export const createCourtService = ({ db, env = process.env, fetchImpl = fetch, n
     return result.rows[0] || null;
   };
 
-  const start = async (chatId, sendPoll) => {
+  const start = async (chatId, sendPoll, { reroll = false } = {}) => {
     const today = now().toISOString().slice(0, 10);
-    const existing = await pool.query('select id from court_sessions where chat_id=$1 and day=$2::date', [chatId, today]);
-    if (existing.rows[0]) return { existing: await session(existing.rows[0].id) };
+    const existing = await pool.query('select id from court_sessions where chat_id=$1 and day=$2::date order by round desc limit 1', [chatId, today]);
+    if (existing.rows[0] && !reroll) return { existing: await session(existing.rows[0].id) };
+    const replaced = reroll && existing.rows[0] ? await session(existing.rows[0].id) : null;
+    if (replaced?.status === 'open') await pool.query("update court_sessions set status='closed' where id=$1", [replaced.id]);
     const candidates = await pool.query(`select u.user_id, u.first_name, u.last_name, u.username from users u join chat_messages m on m.chat_id=u.chat_id and m.user_id=u.user_id where u.chat_id=$1 and m.sent_at > now() - interval '7 days' group by u.user_id, u.first_name, u.last_name, u.username order by random() limit 5`, [chatId]);
     if (candidates.rows.length < 2) return { error: 'Нужно хотя бы два живых человека в чате за последнюю неделю.' };
     const questions = await loadBank();
     const question = questions[Math.floor(Math.random() * questions.length)];
-    const created = await pool.query(`insert into court_sessions (chat_id, day, question, closes_at) values ($1, $2::date, $3, now() + interval '15 minutes') returning id`, [chatId, today, question]);
+    const created = await pool.query(`insert into court_sessions (chat_id, day, round, question, closes_at) values ($1, $2::date, $3, $4, now() + interval '15 minutes') returning id`, [chatId, today, (replaced?.round || 0) + 1, question]);
     const id = created.rows[0].id;
     await Promise.all(candidates.rows.map((user) => pool.query('insert into court_options (session_id, user_id, label) values ($1, $2, $3)', [id, user.user_id, label(user)])));
     const open = await session(id);
     const message = await sendPoll(chatId, open.question, open.options.map((option) => option.label));
     await pool.query('update court_sessions set message_id=$2, poll_id=$3 where id=$1', [id, message.message_id, message.poll.id]);
-    return { session: open };
+    return { session: open, replaced };
   };
 
   const vote = async ({ id, voterId, optionId }) => {
