@@ -2,6 +2,7 @@ import { fetchWithTimeout } from '../runtime/fetch.js';
 
 const timeZone = 'Asia/Almaty';
 const summaryModel = 'gpt-5.4-mini';
+const summaryFormatVersion = 2;
 
 const dateFormatter = new Intl.DateTimeFormat('en-CA', {
   timeZone,
@@ -19,19 +20,10 @@ const labelFormatter = new Intl.DateTimeFormat('ru-RU', {
 
 const dayString = (date = new Date()) => dateFormatter.format(date);
 
-const linkForMessage = (chatId, messageId) =>
-  `https://t.me/c/${String(chatId).replace(/^-100/, '')}/${messageId}`;
-
-const messageLinks = (chatId, ids = []) => Array.from(new Set(ids))
-  .filter(Number.isInteger)
-  .slice(0, 3)
-  .map((id) => `[в этом сообщении](${linkForMessage(chatId, id)})`)
-  .join(', ');
-
 const schema = {
   type: 'object',
   additionalProperties: false,
-  required: ['headline', 'topics', 'decisions', 'recommendations', 'links'],
+  required: ['headline', 'topics', 'decisions', 'recommendations'],
   properties: {
     headline: { type: 'string' },
     topics: {
@@ -39,10 +31,9 @@ const schema = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['text', 'messageIds'],
+        required: ['text'],
         properties: {
-          text: { type: 'string' },
-          messageIds: { type: 'array', items: { type: 'integer' } }
+          text: { type: 'string' }
         }
       }
     },
@@ -51,11 +42,10 @@ const schema = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['text', 'status', 'messageIds'],
+        required: ['text', 'status'],
         properties: {
           text: { type: 'string' },
-          status: { type: 'string', enum: ['решено', 'в процессе', 'без ответа'] },
-          messageIds: { type: 'array', items: { type: 'integer' } }
+          status: { type: 'string', enum: ['решено', 'в процессе', 'без ответа'] }
         }
       }
     },
@@ -64,46 +54,29 @@ const schema = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['text', 'messageIds'],
+        required: ['text'],
         properties: {
-          text: { type: 'string' },
-          messageIds: { type: 'array', items: { type: 'integer' } }
-        }
-      }
-    },
-    links: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['text', 'messageIds'],
-        properties: {
-          text: { type: 'string' },
-          messageIds: { type: 'array', items: { type: 'integer' } }
+          text: { type: 'string' }
         }
       }
     }
   }
 };
 
-const formatSection = (chatId, items, format) => items.length ? items.map((item) => format(item, messageLinks(chatId, item.messageIds))).join('\n') : '—';
+const formatSection = (title, items, format) => items.length ? [
+  title,
+  ...items.map(format),
+  ''
+] : [];
 
-const renderSummary = (chatId, day, summary) => [
-  `#итогидня ${labelFormatter.format(new Date(`${day}T12:00:00Z`))}`,
+const renderSummary = (day, summary) => [
+  `итоги дня · ${labelFormatter.format(new Date(`${day}T12:00:00Z`))}`,
   summary.headline,
   '',
-  'О чем говорили',
-  formatSection(chatId, summary.topics, (item, links) => `- ${item.text}${links ? ` — ${links}` : ''}`),
-  '',
-  'Вопросы и что решили',
-  formatSection(chatId, summary.decisions, (item, links) => `- ${item.text} (${item.status})${links ? ` — ${links}` : ''}`),
-  '',
-  'Что рекомендовали',
-  formatSection(chatId, summary.recommendations, (item, links) => `- ${item.text}${links ? ` — ${links}` : ''}`),
-  '',
-  'Ссылки из чата',
-  formatSection(chatId, summary.links, (item, links) => `- ${item.text}${links ? ` — ${links}` : ''}`)
-].join('\n');
+  ...formatSection('что было', summary.topics, (item) => `• ${item.text}`),
+  ...formatSection('договорились / висит', summary.decisions, (item) => `• ${item.text} — ${item.status}`),
+  ...formatSection('на заметку', summary.recommendations, (item) => `• ${item.text}`)
+].join('\n').trim();
 
 const inputForMessages = (messages) => messages
   .map((message) => `[${message.message_id}] ${message.text}`)
@@ -122,7 +95,7 @@ export const createDailySummaryService = ({ db, env = process.env, fetchImpl = f
     if (!db) return 'Итоги дня требуют PostgreSQL. База пока не подключена.';
     if (!apiKey) return 'Итоги дня пока не настроены: добавь OPENAI_API_KEY в переменные хостинга.';
 
-    const saved = await db.dailySummary(chatId, day);
+    const saved = await db.dailySummary(chatId, day, summaryFormatVersion);
     if (saved) return saved;
 
     const messages = await db.messagesForDay(chatId, day);
@@ -142,7 +115,7 @@ export const createDailySummaryService = ({ db, env = process.env, fetchImpl = f
           input: [
             {
               role: 'system',
-              content: 'Ты редактор итогов Telegram-чата. Пиши на русском кратко и живо. Используй только факты из сообщений. Не выдумывай решения, рекомендации, имена или ссылки. Для каждого пункта указывай реальные messageIds из входных сообщений. Игнорируй команды бота, рекламу и бессмысленный флуд. Дай максимум 4 темы, 5 решений, 3 рекомендации и 5 ссылок; текст каждого пункта — до 240 символов.'
+              content: 'Ты собираешь итоги живого Telegram-чата как нормальный участник, а не корпоративный бот. Пиши по-русски коротко, естественно и без канцелярита. Используй только факты из сообщений; не додумывай решения, рекомендации, имена или события. Игнорируй команды бота, рекламу и бессмысленный флуд. headline — одна живая фраза про вайб дня. topics — максимум 3 действительно заметные темы. decisions — только конкретные договорённости или незакрытые вопросы. recommendations — только реальные советы, места, фильмы, музыка или полезные штуки; не превращай сюда шутки, сплетни и случайные реплики. Если раздел пустой — верни пустой массив. Текст каждого пункта до 180 символов. Не добавляй ссылки, цитаты, заголовки или markdown в текст пунктов.'
             },
             {
               role: 'user',
@@ -168,8 +141,8 @@ export const createDailySummaryService = ({ db, env = process.env, fetchImpl = f
     if (!outputText) throw new Error('OpenAI returned an empty daily summary');
 
     const summary = JSON.parse(outputText);
-    const text = renderSummary(chatId, day, summary);
-    await db.saveDailySummary(chatId, day, text);
+    const text = renderSummary(day, summary);
+    await db.saveDailySummary(chatId, day, text, summaryFormatVersion);
     return text;
   };
 

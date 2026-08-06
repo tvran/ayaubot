@@ -25,8 +25,7 @@ test('reads JSON output from the Responses API output content', async () => {
             headline: 'Короткий итог',
             topics: [],
             decisions: [],
-            recommendations: [],
-            links: []
+            recommendations: []
           })
         }]
       }]
@@ -36,5 +35,7 @@ test('reads JSON output from the Responses API output content', async () => {
   const text = await service.summaryText(-100123, '2026-08-06');
 
   assert.match(text, /Короткий итог/);
+  assert.doesNotMatch(text, /t\.me\/c/);
+  assert.doesNotMatch(text, /Ссылки из чата/);
   assert.equal(saved.chatId, -100123);
 });

@@ -47,9 +47,13 @@ create table if not exists daily_summaries (
   chat_id bigint not null,
   day date not null,
   text text not null,
+  format_version integer not null default 1,
   created_at timestamptz not null default now(),
   primary key (chat_id, day)
 );
+
+alter table daily_summaries
+add column if not exists format_version integer not null default 1;
 
 create table if not exists codeword_games (
   id bigserial primary key,
@@ -212,24 +216,25 @@ export const createPostgresDb = async (env = process.env) => {
       return result.rows;
     },
 
-    async dailySummary(chatId, day) {
+    async dailySummary(chatId, day, formatVersion = 1) {
       const result = await query(
-        'select text from daily_summaries where chat_id = $1 and day = $2::date',
-        [chatId, day]
+        'select text from daily_summaries where chat_id = $1 and day = $2::date and format_version = $3',
+        [chatId, day, formatVersion]
       );
       return result.rows[0]?.text || null;
     },
 
-    async saveDailySummary(chatId, day, text) {
+    async saveDailySummary(chatId, day, text, formatVersion = 1) {
       await query(
         `
-        insert into daily_summaries (chat_id, day, text)
-        values ($1, $2::date, $3)
+        insert into daily_summaries (chat_id, day, text, format_version)
+        values ($1, $2::date, $3, $4)
         on conflict (chat_id, day) do update set
           text = excluded.text,
+          format_version = excluded.format_version,
           created_at = now()
         `,
-        [chatId, day, text]
+        [chatId, day, text, formatVersion]
       );
     },
 
