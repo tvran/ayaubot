@@ -12,6 +12,7 @@ import { createUpdateWorker } from '../queue/worker.js';
 import { createRedisCircuit, createRedisClient } from '../redis/client.js';
 import { createPostgresSchedulerLease } from '../scheduler/postgres-lease.js';
 import { createDailySummaryService } from '../summary/service.js';
+import { createCourtService } from '../court/service.js';
 import { createWorkerHttpServer } from './http.js';
 
 const positiveInteger = (value, fallback) => {
@@ -34,6 +35,7 @@ const mediaDownloader = createMediaDownloadService();
 const demotivationFrameExtractor = createDemotivationFrameExtractor();
 const percentGame = createPercentGameService({ redis, redisGateway });
 const dailySummary = createDailySummaryService({ db });
+const court = createCourtService({ db });
 const rateLimiter = createRateLimiter();
 const schedulerLease = createPostgresSchedulerLease({ pool: db.pool });
 const bot = createBotApp({
@@ -45,6 +47,7 @@ const bot = createBotApp({
   birthdays,
   percentGame,
   dailySummary,
+  court,
   rateLimiter,
   metrics
 });
@@ -63,6 +66,17 @@ const stopBirthdayScheduler = birthdays.startScheduler({
   }),
   runExclusive: (name, task) => schedulerLease.run(name, task)
 });
+
+const courtScheduler = setInterval(() => {
+  court.closeExpired((chatId, messageId, text) => bot.api('editMessageText', { chat_id: chatId, message_id: messageId, text }))
+    .catch((error) => console.error('court scheduler failed', error));
+}, 30_000);
+courtScheduler.unref?.();
+const courtBankScheduler = setInterval(() => {
+  court.refreshQuestionBank().catch((error) => console.error('court bank refresh failed', error));
+}, 12 * 60 * 60 * 1000);
+courtBankScheduler.unref?.();
+court.refreshQuestionBank().catch((error) => console.error('initial court bank refresh failed', error));
 
 await queue.recoverStale();
 worker.start();
@@ -118,6 +132,8 @@ const shutdown = async (signal) => {
   console.log('worker shutting down', { signal });
   clearInterval(monitor);
   clearInterval(cleanup);
+  clearInterval(courtScheduler);
+  clearInterval(courtBankScheduler);
   stopBirthdayScheduler();
   stopLagMonitor();
   await new Promise((resolve) => server.close(resolve));

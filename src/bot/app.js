@@ -69,6 +69,7 @@ const buildHelpText = (percentCommand = 'percent') => [
   '/top — то же самое, но коротко, как твоя мотивация в понедельник',
   '/spam — кто больше всех написал сообщений за всё время',
   '#итогидня — краткий AI-итог сообщений за сегодня',
+  '/court — абсурдный суд дня: один запуск на чат в сутки',
   '/pidor — выбираю подозреваемого дня, строго без бота, я не участвую в этом цирке',
   '/pidor_list — история выборов',
   '/pidor_reset — сбросить выбор на сегодня',
@@ -121,6 +122,7 @@ export const createBotApp = ({
   birthdays,
   percentGame,
   dailySummary,
+  court,
   rateLimiter,
   metrics,
   fetchImpl = fetch,
@@ -700,6 +702,15 @@ export const createBotApp = ({
   };
 
   const handleUpdateInner = async (update) => {
+    const callback = update.callback_query;
+    if (callback?.data?.startsWith('court:')) {
+      const [, id, optionId] = callback.data.split(':');
+      const result = await court?.vote({ id: Number(id), voterId: callback.from?.id, optionId: Number(optionId) });
+      await api('answerCallbackQuery', { callback_query_id: callback.id, text: result?.duplicate ? 'Ты уже проголосовал.' : 'голос учтён' });
+      const item = await court?.session(Number(id));
+      if (item && result?.closed) await api('editMessageText', { chat_id: item.chat_id, message_id: item.message_id, text: court.text(item, true) });
+      return;
+    }
     const message = update.message || update.edited_message;
     if (!message) return;
 
@@ -731,6 +742,13 @@ export const createBotApp = ({
       return;
     }
     const command = parseCommand(message);
+
+    if (command?.name === 'court') {
+      const result = await court?.start(message.chat.id, (chatId, text, extra) => sendMessage(chatId, text, message.message_id, extra));
+      if (result?.error) await sendMessage(message.chat.id, result.error, message.message_id);
+      if (result?.existing) await sendMessage(message.chat.id, 'Суд дня уже идёт или уже состоялся.', message.message_id);
+      return;
+    }
 
     if (!command) {
       await analytics?.ingestMessage(message);
