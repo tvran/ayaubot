@@ -19,15 +19,22 @@ const label = (user) => {
   if (name && user.username) return `${name} (@${user.username})`;
   return name || (user.username ? `@${user.username}` : 'кто-то');
 };
-const resultText = (session) => [
-  'суд дня вынес вердикт',
-  '',
-  session.question,
-  '',
-  `голосов: ${session.total_votes}`,
-  '',
-  ...session.options.map((option) => `• ${option.label} — ${option.votes}`)
-].join('\n');
+const resultText = (session) => {
+  const highest = Math.max(0, ...session.options.map((option) => Number(option.votes)));
+  const winners = highest
+    ? session.options.filter((option) => Number(option.votes) === highest).map((option) => option.label).join(' и ')
+    : 'никто';
+  return [
+    'суд дня вынес вердикт',
+    '',
+    session.question,
+    '',
+    highest ? `вердикт: ${winners} — ${highest}` : 'вердикт: суду не за что зацепиться',
+    `голосов: ${session.total_votes}`,
+    '',
+    ...session.options.map((option) => `• ${option.label} — ${option.votes}`)
+  ].join('\n');
+};
 
 export const createCourtService = ({ db, env = process.env, fetchImpl = fetch, now = () => new Date() } = {}) => {
   const pool = db?.pool;
@@ -50,7 +57,7 @@ export const createCourtService = ({ db, env = process.env, fetchImpl = fetch, n
   };
 
   const session = async (id) => {
-    const result = await pool.query(`select s.*, coalesce(json_agg(json_build_object('user_id', o.user_id, 'label', o.label, 'votes', o.votes) order by o.user_id) filter (where o.user_id is not null), '[]') as options, count(v.voter_id)::int as total_votes from court_sessions s left join court_options o on o.session_id=s.id left join court_votes v on v.session_id=s.id where s.id=$1 group by s.id`, [id]);
+    const result = await pool.query(`select s.*, coalesce((select json_agg(json_build_object('user_id', o.user_id, 'label', o.label, 'votes', o.votes) order by o.user_id) from court_options o where o.session_id=s.id), '[]') as options, (select count(*)::int from court_votes v where v.session_id=s.id) as total_votes from court_sessions s where s.id=$1`, [id]);
     return result.rows[0] || null;
   };
 
@@ -78,21 +85,36 @@ export const createCourtService = ({ db, env = process.env, fetchImpl = fetch, n
     try {
       await client.query('begin');
       const state = await client.query('select status from court_sessions where id=$1 for update', [id]);
-      if (state.rows[0]?.status !== 'open') return { closed: true };
-      const inserted = await client.query('insert into court_votes (session_id, voter_id, option_user_id) values ($1,$2,$3) on conflict do nothing returning voter_id', [id, voterId, optionId]);
-      if (!inserted.rowCount) return { duplicate: true };
+      if (state.rows[0]?.status !== 'open') { await client.query('commit'); return { closed: true }; }
+      const previous = await client.query('select option_user_id from court_votes where session_id=$1 and voter_id=$2 for update', [id, voterId]);
+      if (optionId == null) {
+        if (!previous.rowCount) { await client.query('commit'); return { duplicate: true }; }
+        await client.query('update court_options set votes=greatest(0, votes-1) where session_id=$1 and user_id=$2', [id, previous.rows[0].option_user_id]);
+        await client.query('delete from court_votes where session_id=$1 and voter_id=$2', [id, voterId]);
+        await client.query('commit');
+        return { removed: true };
+      }
+      const target = await client.query('select user_id from court_options where session_id=$1 and user_id=$2 for update', [id, optionId]);
+      if (!target.rowCount) { await client.query('commit'); return { ignored: true }; }
+      if (previous.rows[0]?.option_user_id === optionId) { await client.query('commit'); return { duplicate: true }; }
+      if (previous.rowCount) {
+        await client.query('update court_options set votes=greatest(0, votes-1) where session_id=$1 and user_id=$2', [id, previous.rows[0].option_user_id]);
+        await client.query('update court_votes set option_user_id=$3, created_at=now() where session_id=$1 and voter_id=$2', [id, voterId, optionId]);
+      } else {
+        await client.query('insert into court_votes (session_id, voter_id, option_user_id) values ($1,$2,$3)', [id, voterId, optionId]);
+      }
       await client.query('update court_options set votes=votes+1 where session_id=$1 and user_id=$2', [id, optionId]);
       const count = await client.query('select count(*)::int as count from court_votes where session_id=$1', [id]);
       const closed = count.rows[0].count >= votesToClose;
       if (closed) await client.query("update court_sessions set status='closed' where id=$1", [id]);
       await client.query('commit');
-      return { closed };
+      return { closed, changed: previous.rowCount > 0 };
     } catch (error) { await client.query('rollback'); throw error; } finally { client.release(); }
   };
 
   const votePoll = async ({ pollId, voterId, optionIds }) => {
     const found = await pool.query('select id from court_sessions where poll_id=$1', [pollId]);
-    if (!found.rows[0] || optionIds.length !== 1) return { ignored: true };
+    if (!found.rows[0] || optionIds.length > 1) return { ignored: true };
     const item = await session(found.rows[0].id);
     const result = await vote({ id: item.id, voterId, optionId: item.options[optionIds[0]]?.user_id });
     return { ...result, session: await session(item.id) };
