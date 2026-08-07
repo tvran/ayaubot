@@ -69,7 +69,7 @@ const buildHelpText = (percentCommand = 'percent') => [
   '/top — то же самое, но коротко, как твоя мотивация в понедельник',
   '/spam — кто больше всех написал сообщений за всё время',
   '#итогидня — краткий AI-итог сообщений за сегодня',
-  '/court — абсурдный суд дня: один запуск на чат в сутки',
+  '/court — абсурдный суд: новый можно запустить, когда прошлый закрыт',
   '/court_next — закрыть этот суд и вытащить другой вопрос',
   '/pidor — выбираю подозреваемого дня, строго без бота, я не участвую в этом цирке',
   '/pidor_list — история выборов',
@@ -745,10 +745,10 @@ export const createBotApp = ({
     const command = parseCommand(message);
 
     if (command?.name === 'court' || command?.name === 'court_next') {
-      const result = await court?.start(message.chat.id, (chatId, question, options) => api('sendPoll', { chat_id: chatId, question, options, is_anonymous: false }), { reroll: command.name === 'court_next' });
+      const result = await court?.start(message.chat.id, (chatId, question, options) => api('sendPoll', { chat_id: chatId, question, options, is_anonymous: false }), { reroll: command.name === 'court_next', commandMessageId: message.message_id });
       if (result?.replaced?.message_id) await api('stopPoll', { chat_id: result.replaced.chat_id, message_id: result.replaced.message_id });
       if (result?.error) await sendMessage(message.chat.id, result.error, message.message_id);
-      if (result?.existing) await sendMessage(message.chat.id, 'Суд дня уже идёт или уже состоялся.', message.message_id);
+      if (result?.existing) await sendMessage(message.chat.id, 'Суд уже идёт. Дай ему закончиться или вызови /court_next.', message.message_id);
       return;
     }
 

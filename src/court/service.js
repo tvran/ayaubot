@@ -56,28 +56,37 @@ export const createCourtService = ({ db, env = process.env, fetchImpl = fetch, n
     return questions;
   };
 
-  const session = async (id) => {
-    const result = await pool.query(`select s.*, coalesce((select json_agg(json_build_object('user_id', o.user_id, 'label', o.label, 'votes', o.votes) order by o.user_id) from court_options o where o.session_id=s.id), '[]') as options, (select count(*)::int from court_votes v where v.session_id=s.id) as total_votes from court_sessions s where s.id=$1`, [id]);
+  const session = async (id, client = pool) => {
+    const result = await client.query(`select s.*, coalesce((select json_agg(json_build_object('user_id', o.user_id, 'label', o.label, 'votes', o.votes) order by o.user_id) from court_options o where o.session_id=s.id), '[]') as options, (select count(*)::int from court_votes v where v.session_id=s.id) as total_votes from court_sessions s where s.id=$1`, [id]);
     return result.rows[0] || null;
   };
 
-  const start = async (chatId, sendPoll, { reroll = false } = {}) => {
+  const start = async (chatId, sendPoll, { reroll = false, commandMessageId } = {}) => {
     const today = now().toISOString().slice(0, 10);
-    const existing = await pool.query('select id from court_sessions where chat_id=$1 and day=$2::date order by round desc limit 1', [chatId, today]);
-    if (existing.rows[0] && !reroll) return { existing: await session(existing.rows[0].id) };
-    const replaced = reroll && existing.rows[0] ? await session(existing.rows[0].id) : null;
-    if (replaced?.status === 'open') await pool.query("update court_sessions set status='closed' where id=$1", [replaced.id]);
-    const candidates = await pool.query(`select u.user_id, u.first_name, u.last_name, u.username from users u join chat_messages m on m.chat_id=u.chat_id and m.user_id=u.user_id where u.chat_id=$1 and m.sent_at > now() - interval '7 days' group by u.user_id, u.first_name, u.last_name, u.username order by random() limit 5`, [chatId]);
-    if (candidates.rows.length < 2) return { error: 'Нужно хотя бы два живых человека в чате за последнюю неделю.' };
-    const questions = await loadBank();
-    const question = questions[Math.floor(Math.random() * questions.length)];
-    const created = await pool.query(`insert into court_sessions (chat_id, day, round, question, closes_at) values ($1, $2::date, $3, $4, now() + interval '15 minutes') returning id`, [chatId, today, (replaced?.round || 0) + 1, question]);
-    const id = created.rows[0].id;
-    await Promise.all(candidates.rows.map((user) => pool.query('insert into court_options (session_id, user_id, label) values ($1, $2, $3)', [id, user.user_id, label(user)])));
-    const open = await session(id);
-    const message = await sendPoll(chatId, open.question, open.options.map((option) => option.label));
-    await pool.query('update court_sessions set message_id=$2, poll_id=$3 where id=$1', [id, message.message_id, message.poll.id]);
-    return { session: open, replaced };
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await client.query('select pg_advisory_xact_lock(hashtext($1), hashtext($2))', [String(chatId), today]);
+      const duplicate = commandMessageId == null ? null : await client.query('select id from court_sessions where chat_id=$1 and command_message_id=$2', [chatId, commandMessageId]);
+      if (duplicate?.rows[0]) { await client.query('commit'); return { duplicate: true }; }
+      const existing = await client.query('select id from court_sessions where chat_id=$1 and day=$2::date order by round desc limit 1 for update', [chatId, today]);
+      const latest = existing.rows[0] ? await session(existing.rows[0].id, client) : null;
+      if (latest?.status === 'open' && !reroll) { await client.query('commit'); return { existing: latest }; }
+      const replaced = latest?.status === 'open' ? latest : null;
+      if (replaced) await client.query("update court_sessions set status='closed' where id=$1", [replaced.id]);
+      const candidates = await client.query(`select u.user_id, u.first_name, u.last_name, u.username from users u join chat_messages m on m.chat_id=u.chat_id and m.user_id=u.user_id where u.chat_id=$1 and m.sent_at > now() - interval '7 days' group by u.user_id, u.first_name, u.last_name, u.username order by random() limit 5`, [chatId]);
+      if (candidates.rows.length < 2) { await client.query('commit'); return { error: 'Нужно хотя бы два живых человека в чате за последнюю неделю.' }; }
+      const questions = await loadBank();
+      const question = questions[Math.floor(Math.random() * questions.length)];
+      const created = await client.query(`insert into court_sessions (chat_id, day, round, question, closes_at, command_message_id) values ($1, $2::date, $3, $4, now() + interval '15 minutes', $5) returning id`, [chatId, today, (latest?.round || 0) + 1, question, commandMessageId || null]);
+      const id = created.rows[0].id;
+      await Promise.all(candidates.rows.map((user) => client.query('insert into court_options (session_id, user_id, label) values ($1, $2, $3)', [id, user.user_id, label(user)])));
+      const open = await session(id, client);
+      const message = await sendPoll(chatId, open.question, open.options.map((option) => option.label));
+      await client.query('update court_sessions set message_id=$2, poll_id=$3 where id=$1', [id, message.message_id, message.poll.id]);
+      await client.query('commit');
+      return { session: open, replaced };
+    } catch (error) { await client.query('rollback'); throw error; } finally { client.release(); }
   };
 
   const vote = async ({ id, voterId, optionId }) => {
