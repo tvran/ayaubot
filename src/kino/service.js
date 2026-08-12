@@ -1,4 +1,4 @@
-import { findAdjacentSeatBlock } from './seats.js';
+import { findAdjacentSeatBlock, upperHalfRowKeys } from './seats.js';
 
 const defaultIntervalMs = 60 * 60 * 1000;
 const defaultLookaheadDays = 7;
@@ -10,6 +10,7 @@ const sessionTimeOptions = [
   0,
   ...Array.from({ length: 14 }, (_, index) => (index + 10) * 60)
 ];
+const adjacentSeatOptions = [1, 2, 3, 4, 5, 6];
 
 const positiveInteger = (value, fallback) => {
   const parsed = Number(value);
@@ -91,14 +92,24 @@ const sessionTimeLabel = (minute) => {
 };
 
 const findBlock = (seatPlan, requiredSeats) => {
-  for (const section of seatPlan?.sections || []) {
-    const block = findAdjacentSeatBlock(section.hallPlan, requiredSeats);
+  const sections = seatPlan?.sections || [];
+  const allowedRows = upperHalfRowKeys(sections.map((section) => section.hallPlan));
+  for (const section of sections) {
+    const block = findAdjacentSeatBlock(section.hallPlan, requiredSeats, { allowedRows });
     if (block) return { ...block, sectionId: section.id, sectionName: section.name };
   }
   return null;
 };
 
-const digestText = ({ alerts, title, checkedSessions, failures, limitReached, earliestSessionMinute }) => {
+const digestText = ({
+  alerts,
+  title,
+  checkedSessions,
+  failures,
+  limitReached,
+  earliestSessionMinute,
+  adjacentSeats
+}) => {
   const sorted = [...alerts].sort((left, right) =>
     left.movie.name.localeCompare(right.movie.name, 'ru') ||
     Date.parse(left.session.startTime) - Date.parse(right.session.startTime) ||
@@ -135,6 +146,7 @@ const digestText = ({ alerts, title, checkedSessions, failures, limitReached, ea
 
   lines.push('', `Проверено сеансов: ${checkedSessions}. С хорошими местами: ${alerts.length}.`);
   lines.push(`Фильтр времени: ${sessionTimeLabel(earliestSessionMinute)}.`);
+  lines.push(`Мест рядом: ${adjacentSeats}.`);
   if (limitReached) lines.push('⚠️ Достигнут лимит карт зала за одну проверку.');
   if (failures) lines.push(`⚠️ Не удалось проверить запросов: ${failures}.`);
   return lines.join('\n').slice(0, maxDigestLength);
@@ -170,7 +182,7 @@ export const createTicketonCinemaMonitorService = ({
   const intervalMs = Math.max(positiveInteger(env.TICKETON_CHECK_INTERVAL_MS, defaultIntervalMs), 60_000);
   const dailyCheckHour = boundedHour(env.TICKETON_DAILY_CHECK_HOUR, defaultDailyCheckHour);
   const lookaheadDays = Math.min(positiveInteger(env.TICKETON_LOOKAHEAD_DAYS, defaultLookaheadDays), 31);
-  const adjacentSeats = Math.min(positiveInteger(env.TICKETON_ADJACENT_SEATS, 2), 12);
+  const adjacentSeats = Math.min(positiveInteger(env.TICKETON_ADJACENT_SEATS, 2), 6);
   const pageSize = Math.min(positiveInteger(env.TICKETON_MENU_PAGE_SIZE, defaultPageSize), 20);
   const maxSessionsPerRun = positiveInteger(env.TICKETON_MAX_SESSIONS_PER_RUN, 300);
   const manualMaxSessions = Math.min(
@@ -228,6 +240,7 @@ export const createTicketonCinemaMonitorService = ({
       db.getTicketonChatPreferences(chatId)
     ]);
     const earliestSessionMinute = Number(preferences?.earliest_session_minute) || 0;
+    const preferredAdjacentSeats = Number(preferences?.adjacent_seats) || adjacentSeats;
     const movieLines = watchedSummary(movies, 'movie_name', 'пока пусто');
     const cinemaLines = watchedSummary(cinemas, 'cinema_name', 'все кинотеатры');
     return {
@@ -241,13 +254,15 @@ export const createTicketonCinemaMonitorService = ({
         'Фильтр кинотеатров:',
         ...cinemaLines,
         '',
-        `Время сеансов: ${sessionTimeLabel(earliestSessionMinute)}`
+        `Время сеансов: ${sessionTimeLabel(earliestSessionMinute)}`,
+        `Мест рядом: ${preferredAdjacentSeats}`
       ].join('\n'),
       reply_markup: {
         inline_keyboard: [
           [{ text: `🎬 Фильмы (${movies.length})`, callback_data: 'kino:movies:0' }],
           [{ text: `🏢 Кинотеатры (${cinemas.length || 'все'})`, callback_data: 'kino:cinemas:0' }],
           [{ text: `🕒 Время (${sessionTimeLabel(earliestSessionMinute)})`, callback_data: 'kino:times' }],
+          [{ text: `💺 Мест рядом (${preferredAdjacentSeats})`, callback_data: 'kino:seats' }],
           [{ text: '🔎 Проверить сейчас', callback_data: 'kino:check' }],
           [{ text: '🔄 Обновить', callback_data: 'kino:root' }]
         ]
@@ -276,6 +291,29 @@ export const createTicketonCinemaMonitorService = ({
         `Сейчас: ${sessionTimeLabel(current)}.`
       ].join('\n'),
       reply_markup: { inline_keyboard: keyboard }
+    };
+  };
+
+  const seatsMenu = async (chatId) => {
+    if (!db) return rootMenu(chatId);
+    const preferences = await db.getTicketonChatPreferences(chatId);
+    const current = Number(preferences?.adjacent_seats) || adjacentSeats;
+    return {
+      text: [
+        '💺 Сколько свободных мест должно быть рядом?',
+        '',
+        'Бот покажет только непрерывный блок выбранного размера в верхней половине зала.',
+        `Сейчас: ${current}.`
+      ].join('\n'),
+      reply_markup: {
+        inline_keyboard: [
+          adjacentSeatOptions.map((count) => ({
+            text: `${current === count ? '✅' : '▫️'} ${count}`,
+            callback_data: `kino:seats:${count}`
+          })),
+          [{ text: '↩️ Назад', callback_data: 'kino:root' }]
+        ]
+      }
     };
   };
 
@@ -322,6 +360,7 @@ export const createTicketonCinemaMonitorService = ({
   const handleCallback = async ({ chatId, userId, data }) => {
     if (data === 'kino:root') return rootMenu(chatId);
     if (data === 'kino:times') return timeMenu(chatId);
+    if (data === 'kino:seats') return seatsMenu(chatId);
     const parts = String(data || '').split(':');
     if (parts[0] !== 'kino') throw new Error('Unknown cinema callback.');
     if (parts[1] === 'movies' || parts[1] === 'cinemas') {
@@ -332,6 +371,12 @@ export const createTicketonCinemaMonitorService = ({
       if (!db || !sessionTimeOptions.includes(minute)) throw new Error('Invalid cinema time callback.');
       await db.setTicketonEarliestSessionTime({ chatId, earliestSessionMinute: minute, userId });
       return timeMenu(chatId);
+    }
+    if (parts[1] === 'seats') {
+      const count = Number(parts[2]);
+      if (!db || !adjacentSeatOptions.includes(count)) throw new Error('Invalid cinema seats callback.');
+      await db.setTicketonAdjacentSeats({ chatId, adjacentSeats: count, userId });
+      return seatsMenu(chatId);
     }
     if (!db || !['movie', 'cinema'].includes(parts[1]) || !/^\d+$/u.test(parts[2] || '')) {
       throw new Error('Invalid cinema callback.');
@@ -386,13 +431,16 @@ export const createTicketonCinemaMonitorService = ({
     let limitReached = false;
     const alerts = [];
     const earliestByChat = new Map();
+    const adjacentByChat = new Map();
     const firstDate = calendarDate(localTimeParts(instant, client.timeZone));
     const lastDate = client.addDays(firstDate, lookaheadDays - 1);
 
     for (const [targetChatId, watchedMovies] of moviesByChat) {
       const preferences = await db.getTicketonChatPreferences(targetChatId);
       const earliestSessionMinute = Number(preferences?.earliest_session_minute) || 0;
+      const preferredAdjacentSeats = Number(preferences?.adjacent_seats) || adjacentSeats;
       earliestByChat.set(targetChatId, earliestSessionMinute);
+      adjacentByChat.set(targetChatId, preferredAdjacentSeats);
       const cinemaIds = new Set((cinemasByChat.get(targetChatId) || []).map((row) => String(row.cinema_id)));
       for (const watchedMovie of watchedMovies) {
         const movie = cinemaMovies.get(String(watchedMovie.movie_id));
@@ -452,7 +500,7 @@ export const createTicketonCinemaMonitorService = ({
             continue;
           }
 
-          const block = findBlock(plan, adjacentSeats);
+          const block = findBlock(plan, preferredAdjacentSeats);
           if (!block) continue;
           const url = client.eventUrl(movie, sessionId);
           alerts.push(availabilityAlert({
@@ -476,7 +524,8 @@ export const createTicketonCinemaMonitorService = ({
       failures,
       limitReached,
       alerts,
-      earliestSessionMinute: earliestByChat.get(String(chatId)) || 0
+      earliestSessionMinute: earliestByChat.get(String(chatId)) || 0,
+      adjacentSeats: adjacentByChat.get(String(chatId)) || adjacentSeats
     };
   };
 
@@ -497,7 +546,8 @@ export const createTicketonCinemaMonitorService = ({
         checkedSessions: result.checkedSessions,
         failures: result.failures,
         limitReached: result.limitReached,
-        earliestSessionMinute: result.earliestSessionMinute
+        earliestSessionMinute: result.earliestSessionMinute,
+        adjacentSeats: result.adjacentSeats
       })
     };
   };
@@ -538,7 +588,8 @@ export const createTicketonCinemaMonitorService = ({
             checkedSessions: result.checkedSessions,
             failures: result.failures,
             limitReached: result.limitReached,
-            earliestSessionMinute: result.earliestSessionMinute
+            earliestSessionMinute: result.earliestSessionMinute,
+            adjacentSeats: result.adjacentSeats
           }),
           alerts: result.alerts,
           digestDate
@@ -599,6 +650,7 @@ export const createTicketonCinemaMonitorService = ({
     rootMenu,
     listMenu,
     timeMenu,
+    seatsMenu,
     handleCallback,
     runDueChecks,
     runManualCheck,

@@ -25,14 +25,24 @@ const createDb = () => {
     async toggleTicketonMovieWatch() { return true; },
     async toggleTicketonCinemaWatch() { return true; },
     async getTicketonChatPreferences(chatId) {
-      const earliestSessionMinute = this.preferences.get(String(chatId));
-      return earliestSessionMinute === undefined
-        ? null
-        : { chat_id: String(chatId), earliest_session_minute: earliestSessionMinute };
+      const preferences = this.preferences.get(String(chatId));
+      if (preferences === undefined) return null;
+      if (typeof preferences === 'number') {
+        return { chat_id: String(chatId), earliest_session_minute: preferences, adjacent_seats: 2 };
+      }
+      return { chat_id: String(chatId), earliest_session_minute: 0, adjacent_seats: 2, ...preferences };
     },
     async setTicketonEarliestSessionTime({ chatId, earliestSessionMinute }) {
-      this.preferences.set(String(chatId), earliestSessionMinute);
-      return { chat_id: String(chatId), earliest_session_minute: earliestSessionMinute };
+      const current = await this.getTicketonChatPreferences(chatId);
+      const preferences = { ...current, earliest_session_minute: earliestSessionMinute };
+      this.preferences.set(String(chatId), preferences);
+      return preferences;
+    },
+    async setTicketonAdjacentSeats({ chatId, adjacentSeats }) {
+      const current = await this.getTicketonChatPreferences(chatId);
+      const preferences = { ...current, adjacent_seats: adjacentSeats };
+      this.preferences.set(String(chatId), preferences);
+      return preferences;
     },
     async claimTicketonDailyDigest({ chatId, digestDate }) {
       const key = `${chatId}:${digestDate}`;
@@ -222,7 +232,8 @@ test('Ticketon cinema menus mark watched items and explain empty cinema filter',
   assert.equal(movies.reply_markup.inline_keyboard[0][0].text, '✅ Тестовый фильм');
   assert.equal(movies.reply_markup.inline_keyboard[0][0].callback_data, 'kino:movie:10:0');
   assert.equal(root.reply_markup.inline_keyboard[2][0].callback_data, 'kino:times');
-  assert.equal(root.reply_markup.inline_keyboard[3][0].callback_data, 'kino:check');
+  assert.equal(root.reply_markup.inline_keyboard[3][0].callback_data, 'kino:seats');
+  assert.equal(root.reply_markup.inline_keyboard[4][0].callback_data, 'kino:check');
 });
 
 test('Ticketon cinema time menu stores a shared earliest session time', async () => {
@@ -236,10 +247,43 @@ test('Ticketon cinema time menu stores a shared earliest session time', async ()
   });
   const root = await service.rootMenu('-100');
 
-  assert.equal(db.preferences.get('-100'), 1080);
+  assert.equal(db.preferences.get('-100').earliest_session_minute, 1080);
   assert.match(selected.text, /Сейчас: с 18:00/u);
   assert.match(root.text, /Время сеансов: с 18:00/u);
   assert.match(root.reply_markup.inline_keyboard[2][0].text, /с 18:00/u);
+});
+
+test('Ticketon cinema seats menu stores the required adjacent block size', async () => {
+  const db = createDb();
+  const service = createTicketonCinemaMonitorService({ db, client: createClient() });
+
+  const selected = await service.handleCallback({
+    chatId: '-100',
+    userId: '7',
+    data: 'kino:seats:4'
+  });
+  const root = await service.rootMenu('-100');
+
+  assert.equal(db.preferences.get('-100').adjacent_seats, 4);
+  assert.match(selected.text, /Сейчас: 4/u);
+  assert.match(root.text, /Мест рядом: 4/u);
+  assert.match(root.reply_markup.inline_keyboard[3][0].text, /Мест рядом \(4\)/u);
+});
+
+test('Ticketon cinema monitor applies the chat adjacent seat preference', async () => {
+  const db = createDb();
+  db.preferences.set('-100', { earliest_session_minute: 0, adjacent_seats: 3 });
+  const service = createTicketonCinemaMonitorService({
+    db,
+    client: createClient(),
+    now: () => new Date('2026-08-12T05:00:00Z')
+  });
+
+  const result = await service.runManualCheck({ chatId: '-100' });
+
+  assert.equal(result.adjacentSeats, 3);
+  assert.equal(result.availableSessions, 0);
+  assert.match(result.text, /Мест рядом: 3/u);
 });
 
 test('Ticketon cinema monitor skips sessions earlier than the chat preference', async () => {

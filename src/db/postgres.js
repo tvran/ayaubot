@@ -754,7 +754,7 @@ export const createPostgresDb = async (env = process.env) => {
     async getTicketonChatPreferences(chatId) {
       const result = await query(
         `
-        select chat_id, earliest_session_minute, updated_by, updated_at
+        select chat_id, earliest_session_minute, adjacent_seats, updated_by, updated_at
         from ticketon_chat_preferences
         where chat_id = $1
         `,
@@ -774,9 +774,27 @@ export const createPostgresDb = async (env = process.env) => {
         set earliest_session_minute = excluded.earliest_session_minute,
             updated_by = excluded.updated_by,
             updated_at = now()
-        returning chat_id, earliest_session_minute, updated_by, updated_at
+        returning chat_id, earliest_session_minute, adjacent_seats, updated_by, updated_at
         `,
         [chatId, earliestSessionMinute, userId || null]
+      );
+      return result.rows[0];
+    },
+
+    async setTicketonAdjacentSeats({ chatId, adjacentSeats, userId }) {
+      const result = await query(
+        `
+        insert into ticketon_chat_preferences (
+          chat_id, adjacent_seats, updated_by, updated_at
+        )
+        values ($1, $2, $3, now())
+        on conflict (chat_id) do update
+        set adjacent_seats = excluded.adjacent_seats,
+            updated_by = excluded.updated_by,
+            updated_at = now()
+        returning chat_id, earliest_session_minute, adjacent_seats, updated_by, updated_at
+        `,
+        [chatId, adjacentSeats, userId || null]
       );
       return result.rows[0];
     },

@@ -59,14 +59,23 @@ const sortSeats = (places) => [...places].sort((left, right) => {
   return Number(left.x) - Number(right.x) || String(left.place).localeCompare(String(right.place), 'ru');
 });
 
-export const findAdjacentSeatBlock = (hallPlan, requiredSeats = 2) => {
-  const required = Math.max(2, Math.floor(Number(requiredSeats)) || 2);
+export const upperHalfRowKeys = (hallPlans) => {
+  const plans = Array.isArray(hallPlans) ? hallPlans : [hallPlans];
+  const places = plans.flatMap((hallPlan) => Array.isArray(hallPlan?.places) ? hallPlan.places : []);
+  const rows = rowsByPosition(places);
+  return new Set(rows.slice(Math.floor(rows.length / 2)).map((row) => row.key));
+};
+
+export const findAdjacentSeatBlock = (hallPlan, requiredSeats = 2, { allowedRows } = {}) => {
+  const required = Math.max(1, Math.floor(Number(requiredSeats)) || 2);
   const places = Array.isArray(hallPlan?.places) ? hallPlan.places : [];
   const rows = rowsByPosition(places);
   if (!rows.length) return null;
 
-  // Ticketon cinema plans number rows from the screen outwards. Keep the middle row for odd halls.
-  const upperRows = rows.slice(Math.floor(rows.length / 2));
+  // Ticketon numbers rows from the screen outwards. A shared set lets all price sectors
+  // use the midpoint of the complete hall instead of treating each sector as a hall.
+  const eligibleRows = allowedRows instanceof Set ? allowedRows : upperHalfRowKeys(hallPlan);
+  const upperRows = rows.filter((row) => eligibleRows.has(row.key));
   for (const row of upperRows) {
     const available = sortSeats(row.places.filter((place) => Number(place.status) === 1));
     let block = [];
