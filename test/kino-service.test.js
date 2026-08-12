@@ -130,12 +130,80 @@ test('Ticketon cinema monitor sends one combined morning digest per chat and day
   assert.equal(first.availableSessions, 2);
   assert.equal(second.sent, 0);
   assert.equal(alerts.length, 1);
-  assert.match(alerts[0].text, /Ряд 2, места 7, 8/u);
+  assert.match(alerts[0].text, /ряд 2, места 7, 8/u);
   assert.match(alerts[0].text, /Утренний дайджест Ticketon/u);
   assert.match(alerts[0].text, /session\/30/u);
   assert.match(alerts[0].text, /session\/31/u);
   assert.equal(alerts[0].alerts.length, 2);
   assert.equal(alerts[0].alerts[0].url, 'https://ticketon.kz/cinema/event/test-film/session/30');
+});
+
+test('Ticketon digest groups by cinema and time, then sorts actual seat counts descending', async () => {
+  const db = createDb();
+  db.movies = [
+    { ...movie, movie_id: '10', movie_name: 'Два места', movie_slug: 'two' },
+    { ...movie, movie_id: '11', movie_name: 'Четыре места', movie_slug: 'four' },
+    { ...movie, movie_id: '12', movie_name: 'Поздний сеанс', movie_slug: 'late' },
+    { ...movie, movie_id: '13', movie_name: 'Другой кинотеатр', movie_slug: 'other' }
+  ];
+  db.cinemas = [];
+  const movies = db.movies.map((row) => ({
+    id: Number(row.movie_id),
+    name: row.movie_name,
+    slug: row.movie_slug
+  }));
+  const sessions = new Map([
+    ['10', { id: 110, startTime: '2026-08-12T20:15:00+05:00', cinema: { id: 20, name: 'Альфа' }, hall: { name: 'Зал 1' } }],
+    ['11', { id: 111, startTime: '2026-08-12T20:15:00+05:00', cinema: { id: 20, name: 'Альфа' }, hall: { name: 'Зал 2' } }],
+    ['12', { id: 112, startTime: '2026-08-12T21:15:00+05:00', cinema: { id: 20, name: 'Альфа' }, hall: { name: 'Зал 3' } }],
+    ['13', { id: 113, startTime: '2026-08-12T19:15:00+05:00', cinema: { id: 21, name: 'Бета' }, hall: { name: 'Зал 1' } }]
+  ]);
+  const seatCounts = new Map([[110, 2], [111, 4], [112, 3], [113, 5]]);
+  const client = createClient();
+  client.listMovies = async () => movies;
+  client.listSessions = async (movieId) => [{
+    ...sessions.get(String(movieId)),
+    date: '2026-08-12',
+    salesStatus: 'on_sale'
+  }];
+  client.getSeatPlan = async ({ sessionId }) => ({
+    sections: [{
+      id: '50',
+      name: 'Основной',
+      hallPlan: {
+        places: [
+          { id: `${sessionId}-front`, row: '1', place: '1', status: 0, x: 0, width: 20 },
+          ...Array.from({ length: seatCounts.get(Number(sessionId)) }, (_, index) => ({
+            id: `${sessionId}-${index + 1}`,
+            row: '2',
+            place: String(index + 1),
+            status: 1,
+            x: index * 24,
+            width: 20
+          }))
+        ]
+      }
+    }]
+  });
+  const service = createTicketonCinemaMonitorService({
+    db,
+    client,
+    now: () => new Date('2026-08-12T05:00:00Z')
+  });
+
+  const result = await service.runManualCheck({ chatId: '-100' });
+  const positions = [
+    result.text.indexOf('🏢 Альфа'),
+    result.text.indexOf('🕒 2026-08-12 20:15'),
+    result.text.indexOf('💺 4 места рядом'),
+    result.text.indexOf('💺 2 места рядом'),
+    result.text.indexOf('🕒 2026-08-12 21:15'),
+    result.text.indexOf('🏢 Бета')
+  ];
+
+  assert.equal(result.availableSessions, 4);
+  assert.equal(positions.every((position) => position >= 0), true);
+  assert.deepEqual(positions, [...positions].sort((left, right) => left - right));
 });
 
 test('Ticketon cinema monitor waits for morning and retries a failed digest delivery', async () => {

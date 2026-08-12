@@ -94,11 +94,28 @@ const sessionTimeLabel = (minute) => {
 const findBlock = (seatPlan, requiredSeats) => {
   const sections = seatPlan?.sections || [];
   const allowedRows = upperHalfRowKeys(sections.map((section) => section.hallPlan));
+  let best = null;
   for (const section of sections) {
     const block = findAdjacentSeatBlock(section.hallPlan, requiredSeats, { allowedRows });
-    if (block) return { ...block, sectionId: section.id, sectionName: section.name };
+    if (block && block.places.length > (best?.places.length || 0)) {
+      best = { ...block, sectionId: section.id, sectionName: section.name };
+    }
   }
-  return null;
+  return best;
+};
+
+const seatCountLabel = (count) => {
+  const value = Number(count) || 0;
+  const lastTwo = value % 100;
+  const last = value % 10;
+  const noun = lastTwo >= 11 && lastTwo <= 14
+    ? 'мест'
+    : last === 1
+      ? 'место'
+      : last >= 2 && last <= 4
+        ? 'места'
+        : 'мест';
+  return `${value} ${noun} рядом`;
 };
 
 const digestText = ({
@@ -111,30 +128,41 @@ const digestText = ({
   adjacentSeats
 }) => {
   const sorted = [...alerts].sort((left, right) =>
-    left.movie.name.localeCompare(right.movie.name, 'ru') ||
+    left.cinema.name.localeCompare(right.cinema.name, 'ru') ||
     Date.parse(left.session.startTime) - Date.parse(right.session.startTime) ||
-    left.cinema.name.localeCompare(right.cinema.name, 'ru'));
+    right.block.places.length - left.block.places.length ||
+    left.movie.name.localeCompare(right.movie.name, 'ru'));
   const lines = [title, ''];
-  let currentMovieId;
+  let currentCinemaId;
+  let currentSessionTime;
   let shown = 0;
 
   for (const alert of sorted) {
-    const movieId = String(alert.movie.id);
-    const movieHeader = currentMovieId === movieId ? [] : [`🎬 ${alert.movie.name}`];
-    const hall = alert.hall?.name ? `, ${alert.hall.name}` : '';
+    const cinemaId = String(alert.cinema.id ?? alert.cinema.name);
+    const sessionTime = String(alert.session.startTime);
+    const cinemaChanged = currentCinemaId !== cinemaId;
+    const timeChanged = cinemaChanged || currentSessionTime !== sessionTime;
+    const hall = alert.hall?.name || '';
     const section = alert.block.sectionName && alert.block.sectionName !== 'Основной'
-      ? `, сектор ${alert.block.sectionName}`
-      : '';
-    const chunk = [
-      ...movieHeader,
-      `• ${alert.date} ${alert.time} — ${alert.cinema.name}${hall}${section}`,
-      `  💺 Ряд ${alert.block.row}, места ${alert.block.places.join(', ')}`,
+      ? `сектор ${alert.block.sectionName}`
+      : null;
+    const location = [hall, section].filter(Boolean).join(', ');
+    const chunk = [];
+    if (cinemaChanged) {
+      if (shown) chunk.push('');
+      chunk.push(`🏢 ${alert.cinema.name}`);
+    }
+    if (timeChanged) chunk.push(`🕒 ${alert.date} ${alert.time}`);
+    chunk.push(
+      `• 🎬 ${alert.movie.name}${location ? ` — ${location}` : ''}`,
+      `  💺 ${seatCountLabel(alert.block.places.length)}: ряд ${alert.block.row}, места ${alert.block.places.join(', ')}`,
       `  ${alert.url}`
-    ];
+    );
     const candidate = [...lines, ...chunk].join('\n');
     if (candidate.length > maxDigestLength - 220) break;
     lines.push(...chunk);
-    currentMovieId = movieId;
+    currentCinemaId = cinemaId;
+    currentSessionTime = sessionTime;
     shown += 1;
   }
 
@@ -302,7 +330,7 @@ export const createTicketonCinemaMonitorService = ({
       text: [
         '💺 Сколько свободных мест должно быть рядом?',
         '',
-        'Бот покажет только непрерывный блок выбранного размера в верхней половине зала.',
+        'Бот покажет самый большой непрерывный блок не меньше выбранного размера в верхней половине зала.',
         `Сейчас: ${current}.`
       ].join('\n'),
       reply_markup: {

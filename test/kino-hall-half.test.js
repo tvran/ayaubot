@@ -35,3 +35,20 @@ test('supports monitoring a single available seat', () => {
 
   assert.deepEqual(findAdjacentSeatBlock(hall, 1)?.places, ['7']);
 });
+
+test('returns the largest adjacent block that meets the configured minimum', () => {
+  const hall = {
+    places: [
+      seat(1, 1, 0),
+      seat(2, 1),
+      seat(2, 2),
+      seat(2, 3, 0),
+      seat(2, 4),
+      seat(2, 5),
+      seat(2, 6),
+      seat(2, 7)
+    ]
+  };
+
+  assert.deepEqual(findAdjacentSeatBlock(hall, 2)?.places, ['4', '5', '6', '7']);
+});

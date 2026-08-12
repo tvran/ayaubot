@@ -76,25 +76,31 @@ export const findAdjacentSeatBlock = (hallPlan, requiredSeats = 2, { allowedRows
   // use the midpoint of the complete hall instead of treating each sector as a hall.
   const eligibleRows = allowedRows instanceof Set ? allowedRows : upperHalfRowKeys(hallPlan);
   const upperRows = rows.filter((row) => eligibleRows.has(row.key));
+  let best = null;
+
   for (const row of upperRows) {
     const available = sortSeats(row.places.filter((place) => Number(place.status) === 1));
     let block = [];
+    const keepBlock = () => {
+      if (block.length < required || block.length <= (best?.places.length || 0)) return;
+      best = {
+        row: row.key,
+        places: block.map((seat) => String(seat.place)),
+        seatIds: block.map((seat) => String(seat.id)),
+        rowCount: rows.length
+      };
+    };
+
     for (const place of available) {
       if (!block.length || seatsAreAdjacent(block.at(-1), place)) {
         block.push(place);
       } else {
+        keepBlock();
         block = [place];
       }
-      if (block.length >= required) {
-        return {
-          row: row.key,
-          places: block.slice(0, required).map((seat) => String(seat.place)),
-          seatIds: block.slice(0, required).map((seat) => String(seat.id)),
-          rowCount: rows.length
-        };
-      }
     }
+    keepBlock();
   }
 
-  return null;
+  return best;
 };
