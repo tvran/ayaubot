@@ -70,7 +70,9 @@ test('Ticketon client loads cinema venues and normalizes all dated sessions', as
             venue: 'Cinema',
             address: 'Astana',
             hall_id: 40,
-            hall: 'Hall 1'
+            hall: 'Hall 1',
+            min_price: '6000',
+            currency: 'KZT'
           }]
         }]
       });
@@ -85,8 +87,8 @@ test('Ticketon client loads cinema venues and normalizes all dated sessions', as
     endTime: '2026-08-12T22:00:00+05:00',
     salesStatus: 'on_sale',
     language: undefined,
-    minPrice: undefined,
-    currency: undefined,
+    minPrice: '6000',
+    currency: 'KZT',
     cinema: { id: 20, name: 'Cinema', address: 'Astana' },
     hall: { id: 40, name: 'Hall 1' }
   }]);

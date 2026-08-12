@@ -6,6 +6,7 @@ const defaultPageSize = 8;
 const defaultManualMaxSessions = 30;
 const defaultDailyCheckHour = 9;
 const maxDigestLength = 3900;
+const expensiveTicketThreshold = 5000;
 const sessionTimeOptions = [
   0,
   ...Array.from({ length: 14 }, (_, index) => (index + 10) * 60)
@@ -118,6 +119,22 @@ const seatCountLabel = (count) => {
   return `${value} ${noun} рядом`;
 };
 
+const ticketPrice = (value) => {
+  const normalized = String(value ?? '').replace(/[^\d.-]/gu, '');
+  const price = Number(normalized);
+  return Number.isFinite(price) && price >= 0 ? price : null;
+};
+
+const expensiveTicketLabel = (session) => {
+  const price = ticketPrice(session?.minPrice);
+  const currency = String(session?.currency || 'KZT').trim().toUpperCase();
+  if (price === null || price <= expensiveTicketThreshold || !['KZT', '₸', 'TENGE'].includes(currency)) return null;
+  const formatted = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 })
+    .format(price)
+    .replace(/\u00a0/gu, ' ');
+  return `  💸 Дорогой билет: от ${formatted} ₸`;
+};
+
 const digestText = ({
   alerts,
   title,
@@ -128,39 +145,46 @@ const digestText = ({
   adjacentSeats
 }) => {
   const sorted = [...alerts].sort((left, right) =>
+    left.movie.name.localeCompare(right.movie.name, 'ru') ||
     left.cinema.name.localeCompare(right.cinema.name, 'ru') ||
     Date.parse(left.session.startTime) - Date.parse(right.session.startTime) ||
-    right.block.places.length - left.block.places.length ||
-    left.movie.name.localeCompare(right.movie.name, 'ru'));
+    right.block.places.length - left.block.places.length);
   const lines = [title, ''];
+  let currentMovieId;
   let currentCinemaId;
   let currentSessionTime;
   let shown = 0;
 
   for (const alert of sorted) {
+    const movieId = String(alert.movie.id ?? alert.movie.name);
     const cinemaId = String(alert.cinema.id ?? alert.cinema.name);
     const sessionTime = String(alert.session.startTime);
-    const cinemaChanged = currentCinemaId !== cinemaId;
+    const movieChanged = currentMovieId !== movieId;
+    const cinemaChanged = movieChanged || currentCinemaId !== cinemaId;
     const timeChanged = cinemaChanged || currentSessionTime !== sessionTime;
     const hall = alert.hall?.name || '';
     const section = alert.block.sectionName && alert.block.sectionName !== 'Основной'
       ? `сектор ${alert.block.sectionName}`
       : null;
     const location = [hall, section].filter(Boolean).join(', ');
+    const expensive = expensiveTicketLabel(alert.session);
     const chunk = [];
-    if (cinemaChanged) {
+    if (movieChanged) {
       if (shown) chunk.push('');
-      chunk.push(`🏢 ${alert.cinema.name}`);
+      chunk.push(`🎬 ${alert.movie.name}`);
     }
+    if (cinemaChanged) chunk.push(`🏢 ${alert.cinema.name}`);
     if (timeChanged) chunk.push(`🕒 ${alert.date} ${alert.time}`);
     chunk.push(
-      `• 🎬 ${alert.movie.name}${location ? ` — ${location}` : ''}`,
+      `• ${location || 'Сеанс'}`,
       `  💺 ${seatCountLabel(alert.block.places.length)}: ряд ${alert.block.row}, места ${alert.block.places.join(', ')}`,
+      ...(expensive ? [expensive] : []),
       `  ${alert.url}`
     );
     const candidate = [...lines, ...chunk].join('\n');
     if (candidate.length > maxDigestLength - 220) break;
     lines.push(...chunk);
+    currentMovieId = movieId;
     currentCinemaId = cinemaId;
     currentSessionTime = sessionTime;
     shown += 1;

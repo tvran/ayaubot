@@ -138,13 +138,11 @@ test('Ticketon cinema monitor sends one combined morning digest per chat and day
   assert.equal(alerts[0].alerts[0].url, 'https://ticketon.kz/cinema/event/test-film/session/30');
 });
 
-test('Ticketon digest groups by cinema and time, then sorts actual seat counts descending', async () => {
+test('Ticketon digest groups by movie, cinema and time, then sorts seat counts descending', async () => {
   const db = createDb();
   db.movies = [
-    { ...movie, movie_id: '10', movie_name: 'Два места', movie_slug: 'two' },
-    { ...movie, movie_id: '11', movie_name: 'Четыре места', movie_slug: 'four' },
-    { ...movie, movie_id: '12', movie_name: 'Поздний сеанс', movie_slug: 'late' },
-    { ...movie, movie_id: '13', movie_name: 'Другой кинотеатр', movie_slug: 'other' }
+    { ...movie, movie_id: '10', movie_name: 'Альфа фильм', movie_slug: 'alpha-film' },
+    { ...movie, movie_id: '11', movie_name: 'Бета фильм', movie_slug: 'beta-film' }
   ];
   db.cinemas = [];
   const movies = db.movies.map((row) => ({
@@ -153,19 +151,24 @@ test('Ticketon digest groups by cinema and time, then sorts actual seat counts d
     slug: row.movie_slug
   }));
   const sessions = new Map([
-    ['10', { id: 110, startTime: '2026-08-12T20:15:00+05:00', cinema: { id: 20, name: 'Альфа' }, hall: { name: 'Зал 1' } }],
-    ['11', { id: 111, startTime: '2026-08-12T20:15:00+05:00', cinema: { id: 20, name: 'Альфа' }, hall: { name: 'Зал 2' } }],
-    ['12', { id: 112, startTime: '2026-08-12T21:15:00+05:00', cinema: { id: 20, name: 'Альфа' }, hall: { name: 'Зал 3' } }],
-    ['13', { id: 113, startTime: '2026-08-12T19:15:00+05:00', cinema: { id: 21, name: 'Бета' }, hall: { name: 'Зал 1' } }]
+    ['10', [
+      { id: 110, startTime: '2026-08-12T20:15:00+05:00', minPrice: '5000', currency: 'KZT', cinema: { id: 20, name: 'Альфа' }, hall: { name: 'Зал 1' } },
+      { id: 111, startTime: '2026-08-12T20:15:00+05:00', minPrice: '5001', currency: 'KZT', cinema: { id: 20, name: 'Альфа' }, hall: { name: 'Зал 2' } },
+      { id: 112, startTime: '2026-08-12T21:15:00+05:00', minPrice: '4500', currency: 'KZT', cinema: { id: 20, name: 'Альфа' }, hall: { name: 'Зал 3' } },
+      { id: 113, startTime: '2026-08-12T19:15:00+05:00', minPrice: '7000', currency: 'USD', cinema: { id: 21, name: 'Бета' }, hall: { name: 'Зал 1' } }
+    ]],
+    ['11', [
+      { id: 114, startTime: '2026-08-12T18:15:00+05:00', minPrice: '6000', currency: 'KZT', cinema: { id: 19, name: 'Аардварк' }, hall: { name: 'Зал 4' } }
+    ]]
   ]);
-  const seatCounts = new Map([[110, 2], [111, 4], [112, 3], [113, 5]]);
+  const seatCounts = new Map([[110, 2], [111, 4], [112, 3], [113, 5], [114, 2]]);
   const client = createClient();
   client.listMovies = async () => movies;
-  client.listSessions = async (movieId) => [{
-    ...sessions.get(String(movieId)),
+  client.listSessions = async (movieId) => sessions.get(String(movieId)).map((session) => ({
+    ...session,
     date: '2026-08-12',
     salesStatus: 'on_sale'
-  }];
+  }));
   client.getSeatPlan = async ({ sessionId }) => ({
     sections: [{
       id: '50',
@@ -193,17 +196,24 @@ test('Ticketon digest groups by cinema and time, then sorts actual seat counts d
 
   const result = await service.runManualCheck({ chatId: '-100' });
   const positions = [
+    result.text.indexOf('🎬 Альфа фильм'),
     result.text.indexOf('🏢 Альфа'),
     result.text.indexOf('🕒 2026-08-12 20:15'),
     result.text.indexOf('💺 4 места рядом'),
     result.text.indexOf('💺 2 места рядом'),
     result.text.indexOf('🕒 2026-08-12 21:15'),
-    result.text.indexOf('🏢 Бета')
+    result.text.indexOf('🏢 Бета'),
+    result.text.indexOf('🎬 Бета фильм'),
+    result.text.indexOf('🏢 Аардварк')
   ];
 
-  assert.equal(result.availableSessions, 4);
+  assert.equal(result.availableSessions, 5);
   assert.equal(positions.every((position) => position >= 0), true);
   assert.deepEqual(positions, [...positions].sort((left, right) => left - right));
+  assert.equal(result.text.match(/💸 Дорогой билет/gu)?.length, 2);
+  assert.match(result.text, /💺 4 места рядом[\s\S]*💸 Дорогой билет: от 5 001 ₸[\s\S]*session\/111/u);
+  assert.doesNotMatch(result.text, /💺 2 места рядом[\s\S]*Дорогой билет[\s\S]*session\/110/u);
+  assert.doesNotMatch(result.text, /7000|7 000/u);
 });
 
 test('Ticketon cinema monitor waits for morning and retries a failed digest delivery', async () => {
