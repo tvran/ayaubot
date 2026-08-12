@@ -82,7 +82,8 @@ Npm scripts:
 | `TICKETON_MONITOR_ENABLED` | Необязательна | `false` отключает scheduler Ticketon; по умолчанию включён |
 | `TICKETON_BASE_URL`, `TICKETON_API_URL` | Необязательны | Сайт и публичный JSON API Ticketon |
 | `TICKETON_CITY_ID`, `TICKETON_CITY_CODE`, `TICKETON_TIME_ZONE` | Необязательны | По умолчанию Астана: `1`, `astana`, `Asia/Almaty` |
-| `TICKETON_CHECK_INTERVAL_MS`, `TICKETON_LOOKAHEAD_DAYS` | Необязательны | Интервал и горизонт мониторинга: 3600000 ms и 7 дней |
+| `TICKETON_CHECK_INTERVAL_MS`, `TICKETON_LOOKAHEAD_DAYS` | Необязательны | Интервал пробуждения scheduler и горизонт мониторинга: 3600000 ms и 7 дней |
+| `TICKETON_DAILY_CHECK_HOUR` | Необязательна | Первый локальный час ежедневного дайджеста, по умолчанию 9 |
 | `TICKETON_ADJACENT_SEATS`, `TICKETON_MAX_SESSIONS_PER_RUN` | Необязательны | Минимальный блок мест и лимит карт за tick: 2 и 300 |
 | `TICKETON_MANUAL_MAX_SESSIONS` | Необязательна | Лимит карт зала за ручную проверку: 30, но не выше общего лимита tick |
 | `TICKETON_REQUEST_TIMEOUT_MS` | Необязательна | Timeout read-only запроса Ticketon, по умолчанию 15000 ms |

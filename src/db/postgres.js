@@ -751,6 +751,36 @@ export const createPostgresDb = async (env = process.env) => {
       return inserted.rowCount > 0;
     },
 
+    async getTicketonChatPreferences(chatId) {
+      const result = await query(
+        `
+        select chat_id, earliest_session_minute, updated_by, updated_at
+        from ticketon_chat_preferences
+        where chat_id = $1
+        `,
+        [chatId]
+      );
+      return result.rows[0] || null;
+    },
+
+    async setTicketonEarliestSessionTime({ chatId, earliestSessionMinute, userId }) {
+      const result = await query(
+        `
+        insert into ticketon_chat_preferences (
+          chat_id, earliest_session_minute, updated_by, updated_at
+        )
+        values ($1, $2, $3, now())
+        on conflict (chat_id) do update
+        set earliest_session_minute = excluded.earliest_session_minute,
+            updated_by = excluded.updated_by,
+            updated_at = now()
+        returning chat_id, earliest_session_minute, updated_by, updated_at
+        `,
+        [chatId, earliestSessionMinute, userId || null]
+      );
+      return result.rows[0];
+    },
+
     async claimTicketonNotification({ chatId, sessionId, movieId, cinemaId }) {
       const result = await query(
         `
@@ -773,6 +803,30 @@ export const createPostgresDb = async (env = process.env) => {
 
     async deleteTicketonNotificationsBefore(date) {
       await query('delete from ticketon_notifications where notified_at < $1::date', [date]);
+    },
+
+    async claimTicketonDailyDigest({ chatId, digestDate }) {
+      const result = await query(
+        `
+        insert into ticketon_daily_digests (chat_id, digest_date)
+        values ($1, $2::date)
+        on conflict do nothing
+        returning 1
+        `,
+        [chatId, digestDate]
+      );
+      return result.rowCount > 0;
+    },
+
+    async releaseTicketonDailyDigest({ chatId, digestDate }) {
+      await query(
+        'delete from ticketon_daily_digests where chat_id = $1 and digest_date = $2::date',
+        [chatId, digestDate]
+      );
+    },
+
+    async deleteTicketonDailyDigestsBefore(date) {
+      await query('delete from ticketon_daily_digests where digest_date < $1::date', [date]);
     }
   };
 };

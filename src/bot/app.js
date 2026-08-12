@@ -64,7 +64,7 @@ const buildHelpText = (percentCommand = 'percent') => [
   '/qd — удаляю стикер из пака, если ответить на него',
   '/demotivation <текст> — делаю демотиватор из изображения в reply',
   '/all — зову всех известных мне участников чата, кроме ботов',
-  '/kino — выбираю фильмы и кинотеатры для ежечасного мониторинга мест',
+  '/kino — выбираю фильмы и кинотеатры для утреннего дайджеста мест',
   '',
   '/topwords — топ-5 слов за последние 14 дней, кто тут главный болтун',
   '/top — то же самое, но коротко, как твоя мотивация в понедельник',
@@ -308,7 +308,7 @@ export const createBotApp = ({
     }
   };
 
-  const mentionChatMembers = async ({ chatId, header, replyToMessageId, emptyText }) => {
+  const mentionChatMembers = async ({ chatId, header, replyToMessageId, emptyText, singleMessage = false }) => {
     const knownRows = await analytics?.knownUsers?.(chatId);
     if (!knownRows) {
       if (header) await sendMessage(chatId, header.trimEnd(), replyToMessageId);
@@ -337,7 +337,8 @@ export const createBotApp = ({
       return false;
     }
 
-    for (const [index, mention] of mentionMessages.entries()) {
+    const messagesToSend = singleMessage ? mentionMessages.slice(0, 1) : mentionMessages;
+    for (const [index, mention] of messagesToSend.entries()) {
       await sendMessage(chatId, mention.text, index === 0 ? replyToMessageId : undefined, {
         entities: mention.entities
       });
@@ -347,7 +348,8 @@ export const createBotApp = ({
 
   const notifyCinemaAvailability = (alert) => mentionChatMembers({
     chatId: alert.chatId,
-    header: alert.text
+    header: alert.text,
+    singleMessage: true
   });
 
   const handleAllCommand = async (message) => {
@@ -742,7 +744,7 @@ export const createBotApp = ({
         });
       });
       try {
-        const result = await kino.runManualCheck({ chatId, notify: notifyCinemaAvailability });
+        const result = await kino.runManualCheck({ chatId });
         await sendMessage(chatId, result.text, message.message_id, { disable_web_page_preview: true });
       } catch (error) {
         logger.error('manual kino check failed', {

@@ -103,7 +103,9 @@ Adapter возвращает публичное поле `pool` для queue/lea
 
 `ticketon_watched_movies` хранит выбранные фильмы по ключу `(chat_id, movie_id)`, отображаемое имя, slug и автора изменения. `ticketon_watched_cinemas` имеет тот же контракт для фильтра кинотеатров. Отсутствие строк кинотеатров у чата означает проверку всех кинотеатров Астаны. Старые таблицы `kino_*` не переиспользуются, поскольку ID разных провайдеров могут совпасть.
 
-`ticketon_notifications` содержит delivery marker `(chat_id, session_id)` и связанные IDs фильма/кинотеатра. `claimTicketonNotification` вставляет его через `ON CONFLICT DO NOTHING` перед Telegram-вызовом. Временная ошибка освобождает marker; успешный сеанс больше не оповещается. Записи старше 90 дней очищает scheduler.
+`ticketon_daily_digests` содержит marker `(chat_id, digest_date)`. `claimTicketonDailyDigest` вставляет его через `ON CONFLICT DO NOTHING` перед суточной проверкой, поэтому рестарт или несколько worker replicas не создают второй дайджест за тот же локальный день. Ошибка Telegram освобождает marker для повтора; записи старше 400 дней очищает scheduler. Таблица `ticketon_notifications` сохранена как часть ранее применённой схемы, но ежедневный Ticketon flow больше не использует per-session marker.
+
+`ticketon_chat_preferences` хранит одну общую настройку чата: `earliest_session_minute` в диапазоне 0…1439, автора и время последнего изменения. Значение `0` означает отсутствие фильтра. Service отбрасывает более ранние локальные сеансы до запроса карты зала.
 
 ## Очередь и leases
 
@@ -111,4 +113,4 @@ Adapter возвращает публичное поле `pool` для queue/lea
 
 `telegram_chat_job_locks` содержит краткоживущую аренду chat ID и гарантирует последовательность внутри одного чата при нескольких worker loops или replicas.
 
-`scheduler_leases` реализует singleton-запуск периодических задач. Birthday и Ticketon delivery markers остаются отдельной гарантией идемпотентности конкретного уведомления.
+`scheduler_leases` реализует singleton-запуск периодических задач. Birthday markers и суточный Ticketon marker остаются отдельной гарантией идемпотентности конкретного уведомления.
