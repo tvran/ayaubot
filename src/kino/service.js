@@ -9,9 +9,7 @@ const positiveInteger = (value, fallback) => {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 };
 
-const itemName = (item, fallback) => String(
-  item?.name || item?.name_rus || item?.name_origin || fallback
-).trim();
+const itemName = (item, fallback) => String(item?.name || fallback).trim();
 
 const shortLabel = (value, limit = 56) => {
   const symbols = Array.from(String(value));
@@ -56,43 +54,58 @@ const localTimeParts = (instant, timeZone) => {
     .map((part) => [part.type, part.value]));
 };
 
-const sessionIsFuture = (session, date, instant, timeZone) => {
-  const local = localTimeParts(instant, timeZone);
-  const today = `${local.year}-${local.month}-${local.day}`;
-  if (date > today) return true;
-  if (date < today) return false;
-  const sessionMinutes = Number(session.hour) * 60 + Number(session.minutes);
-  return Number.isFinite(sessionMinutes) && sessionMinutes > Number(local.hour) * 60 + Number(local.minute);
+const sessionPresentation = (session, timeZone) => {
+  const instant = new Date(session.startTime);
+  if (!Number.isFinite(instant.getTime())) return { date: session.date, time: '??:??' };
+  const parts = localTimeParts(instant, timeZone);
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}`
+  };
 };
 
-const alertText = ({ movie, cinema, hall, session, date, block, url }) => [
-  '🎟 На наблюдаемый фильм появились хорошие места!',
-  '',
-  `🎬 ${movie.name}`,
-  `🏢 ${cinema.name}${hall?.name ? `, ${hall.name}` : ''}`,
-  `🕒 ${date} в ${String(session.hour).padStart(2, '0')}:${String(session.minutes).padStart(2, '0')}`,
-  `💺 Ряд ${block.row}, места ${block.places.join(', ')} — рядом и не ниже середины зала.`,
-  '',
-  url,
-  '',
-  'Зову всех, пока лучшие места не растащили:\n'
-].join('\n');
+const findBlock = (seatPlan, requiredSeats) => {
+  for (const section of seatPlan?.sections || []) {
+    const block = findAdjacentSeatBlock(section.hallPlan, requiredSeats);
+    if (block) return { ...block, sectionId: section.id, sectionName: section.name };
+  }
+  return null;
+};
 
-export const createKinoMonitorService = ({
+const alertText = ({ movie, cinema, hall, session, block, url, timeZone }) => {
+  const starts = sessionPresentation(session, timeZone);
+  const section = block.sectionName && block.sectionName !== 'Основной'
+    ? `, сектор ${block.sectionName}`
+    : '';
+  return [
+    '🎟 На наблюдаемый фильм появились хорошие места!',
+    '',
+    `🎬 ${movie.name}`,
+    `🏢 ${cinema.name}${hall?.name ? `, ${hall.name}` : ''}${section}`,
+    `🕒 ${starts.date} в ${starts.time}`,
+    `💺 Ряд ${block.row}, места ${block.places.join(', ')} — рядом и не ниже середины зала.`,
+    '',
+    url,
+    '',
+    'Зову всех, пока лучшие места не растащили:\n'
+  ].join('\n');
+};
+
+export const createTicketonCinemaMonitorService = ({
   db,
   client,
   env = process.env,
   now = () => new Date(),
   logger = console
 } = {}) => {
-  if (!client) throw new Error('Kino monitor requires a Kino.kz client.');
+  if (!client) throw new Error('Cinema monitor requires a Ticketon client.');
 
-  const intervalMs = Math.max(positiveInteger(env.KINO_CHECK_INTERVAL_MS, defaultIntervalMs), 60_000);
-  const lookaheadDays = Math.min(positiveInteger(env.KINO_LOOKAHEAD_DAYS, defaultLookaheadDays), 31);
-  const adjacentSeats = Math.min(positiveInteger(env.KINO_ADJACENT_SEATS, 2), 12);
-  const pageSize = Math.min(positiveInteger(env.KINO_MENU_PAGE_SIZE, defaultPageSize), 20);
-  const maxSessionsPerRun = positiveInteger(env.KINO_MAX_SESSIONS_PER_RUN, 300);
-  const catalogTtlMs = Math.max(positiveInteger(env.KINO_CATALOG_TTL_MS, 5 * 60 * 1000), 30_000);
+  const intervalMs = Math.max(positiveInteger(env.TICKETON_CHECK_INTERVAL_MS, defaultIntervalMs), 60_000);
+  const lookaheadDays = Math.min(positiveInteger(env.TICKETON_LOOKAHEAD_DAYS, defaultLookaheadDays), 31);
+  const adjacentSeats = Math.min(positiveInteger(env.TICKETON_ADJACENT_SEATS, 2), 12);
+  const pageSize = Math.min(positiveInteger(env.TICKETON_MENU_PAGE_SIZE, defaultPageSize), 20);
+  const maxSessionsPerRun = positiveInteger(env.TICKETON_MAX_SESSIONS_PER_RUN, 300);
+  const catalogTtlMs = Math.max(positiveInteger(env.TICKETON_CATALOG_TTL_MS, 5 * 60 * 1000), 30_000);
   const catalogCache = new Map();
 
   const cached = async (key, loader) => {
@@ -107,10 +120,11 @@ export const createKinoMonitorService = ({
     const movies = await client.listMovies({ days: lookaheadDays });
     const unique = new Map();
     for (const movie of movies) {
-      if (!Number.isInteger(Number(movie.id))) continue;
+      if (!Number.isInteger(Number(movie.id)) || !movie.slug) continue;
       unique.set(String(movie.id), {
         id: String(movie.id),
-        name: itemName(movie, `Фильм ${movie.id}`)
+        name: itemName(movie, `Фильм ${movie.id}`),
+        slug: String(movie.slug)
       });
     }
     return Array.from(unique.values()).sort((left, right) => left.name.localeCompare(right.name, 'ru'));
@@ -137,24 +151,20 @@ export const createKinoMonitorService = ({
       };
     }
     const [movies, cinemas] = await Promise.all([
-      db.listKinoMovieWatches(chatId),
-      db.listKinoCinemaWatches(chatId)
+      db.listTicketonMovieWatches(chatId),
+      db.listTicketonCinemaWatches(chatId)
     ]);
     const movieLines = watchedSummary(movies, 'movie_name', 'пока пусто');
     const cinemaLines = watchedSummary(cinemas, 'cinema_name', 'все кинотеатры');
-    const warning = client.seatPlansEnabled
-      ? []
-      : ['', '⚠️ Каталоги доступны, но endpoint карты зала ещё не задан администратором.'];
     return {
       text: [
-        '🎟 Монитор kino.kz',
+        '🎟 Монитор Ticketon — только кино в Астане',
         '',
         'Наблюдаемые фильмы:',
         ...movieLines,
         '',
         'Фильтр кинотеатров:',
-        ...cinemaLines,
-        ...warning
+        ...cinemaLines
       ].join('\n'),
       reply_markup: {
         inline_keyboard: [
@@ -171,7 +181,7 @@ export const createKinoMonitorService = ({
     const movies = kind === 'movies';
     const [catalog, watchedRows] = await Promise.all([
       movies ? movieCatalog() : cinemaCatalog(),
-      movies ? db.listKinoMovieWatches(chatId) : db.listKinoCinemaWatches(chatId)
+      movies ? db.listTicketonMovieWatches(chatId) : db.listTicketonCinemaWatches(chatId)
     ]);
     const watched = new Map(watchedRows.map((row) => [
       String(movies ? row.movie_id : row.cinema_id),
@@ -200,8 +210,8 @@ export const createKinoMonitorService = ({
     keyboard.push([{ text: '↩️ Назад', callback_data: 'kino:root' }]);
     return {
       text: movies
-        ? '🎬 Выбери фильмы для ежечасного наблюдения. ✅ — уже в списке.'
-        : '🏢 Выбери кинотеатры. Если не выбран ни один, проверяются все. ✅ — фильтр включён.',
+        ? '🎬 Выбери фильмы из раздела «Кино» Ticketon для ежечасного наблюдения. ✅ — уже в списке.'
+        : '🏢 Выбери кинотеатры Астаны. Если не выбран ни один, проверяются все. ✅ — фильтр включён.',
       reply_markup: { inline_keyboard: keyboard }
     };
   };
@@ -209,185 +219,181 @@ export const createKinoMonitorService = ({
   const handleCallback = async ({ chatId, userId, data }) => {
     if (data === 'kino:root') return rootMenu(chatId);
     const parts = String(data || '').split(':');
-    if (parts[0] !== 'kino') throw new Error('Unknown kino callback.');
+    if (parts[0] !== 'kino') throw new Error('Unknown cinema callback.');
     if (parts[1] === 'movies' || parts[1] === 'cinemas') {
       return listMenu(chatId, parts[1], parts[2]);
     }
     if (!db || !['movie', 'cinema'].includes(parts[1]) || !/^\d+$/u.test(parts[2] || '')) {
-      throw new Error('Invalid kino callback.');
+      throw new Error('Invalid cinema callback.');
     }
 
     const kind = parts[1];
     const catalog = kind === 'movie' ? await movieCatalog() : await cinemaCatalog();
     const currentRows = kind === 'movie'
-      ? await db.listKinoMovieWatches(chatId)
-      : await db.listKinoCinemaWatches(chatId);
+      ? await db.listTicketonMovieWatches(chatId)
+      : await db.listTicketonCinemaWatches(chatId);
     const idField = kind === 'movie' ? 'movie_id' : 'cinema_id';
     const nameField = kind === 'movie' ? 'movie_name' : 'cinema_name';
     const current = currentRows.find((row) => String(row[idField]) === parts[2]);
     const item = catalog.find((entry) => entry.id === parts[2]);
     const name = item?.name || current?.[nameField];
-    if (!name) throw new Error('Kino.kz item is no longer available.');
+    if (!name) throw new Error('Ticketon item is no longer available.');
 
     if (kind === 'movie') {
-      await db.toggleKinoMovieWatch({ chatId, movieId: parts[2], movieName: name, userId });
+      await db.toggleTicketonMovieWatch({
+        chatId,
+        movieId: parts[2],
+        movieName: name,
+        movieSlug: item?.slug || current?.movie_slug,
+        userId
+      });
       return listMenu(chatId, 'movies', parts[3]);
     }
-    await db.toggleKinoCinemaWatch({ chatId, cinemaId: parts[2], cinemaName: name, userId });
+    await db.toggleTicketonCinemaWatch({ chatId, cinemaId: parts[2], cinemaName: name, userId });
     return listMenu(chatId, 'cinemas', parts[3]);
   };
 
   const runDueChecks = async ({ notify } = {}) => {
-    if (!db || !client.seatPlansEnabled) return { sent: 0, skipped: 'disabled' };
-    if (typeof notify !== 'function') throw new Error('Kino monitor requires notify callback.');
+    if (!db) return { sent: 0, skipped: 'disabled' };
+    if (typeof notify !== 'function') throw new Error('Cinema monitor requires notify callback.');
 
-    const [movieRows, cinemaRows] = await Promise.all([
-      db.listKinoMovieWatches(),
-      db.listKinoCinemaWatches()
+    const [movieRows, cinemaRows, currentMovies] = await Promise.all([
+      db.listTicketonMovieWatches(),
+      db.listTicketonCinemaWatches(),
+      movieCatalog()
     ]);
     const moviesByChat = groupRowsByChat(movieRows);
     const cinemasByChat = groupRowsByChat(cinemaRows);
+    const cinemaMovies = new Map(currentMovies.map((movie) => [movie.id, movie]));
     const sessionCache = new Map();
     const seatPlanCache = new Map();
     let checkedSessions = 0;
     let sent = 0;
     let failures = 0;
-    let endpointUnavailable = false;
     const instant = now();
+    const firstDate = client.today();
+    const lastDate = client.addDays(firstDate, lookaheadDays - 1);
 
-    chatLoop:
     for (const [chatId, watchedMovies] of moviesByChat) {
       const cinemaIds = new Set((cinemasByChat.get(chatId) || []).map((row) => String(row.cinema_id)));
-      for (const movie of watchedMovies) {
-        for (let day = 0; day < lookaheadDays; day += 1) {
-          const date = client.addDays(client.today(), day);
-          const sessionsKey = `${movie.movie_id}:${date}`;
-          let sessionsPromise = sessionCache.get(sessionsKey);
-          if (!sessionsPromise) {
-            sessionsPromise = client.listSessions(movie.movie_id, date);
-            sessionCache.set(sessionsKey, sessionsPromise);
+      for (const watchedMovie of watchedMovies) {
+        const movie = cinemaMovies.get(String(watchedMovie.movie_id));
+        if (!movie) continue;
+        const sessionsKey = movie.id;
+        let sessionsPromise = sessionCache.get(sessionsKey);
+        if (!sessionsPromise) {
+          sessionsPromise = client.listSessions(movie.id);
+          sessionCache.set(sessionsKey, sessionsPromise);
+        }
+        let sessions;
+        try {
+          sessions = await sessionsPromise;
+        } catch (error) {
+          failures += 1;
+          logger.error('Ticketon cinema sessions request failed', {
+            movieId: movie.id,
+            error: error?.message || String(error)
+          });
+          continue;
+        }
+
+        for (const session of sessions) {
+          const sessionId = session.id;
+          const cinema = session.cinema;
+          const hall = session.hall;
+          const sessionTime = Date.parse(session.startTime);
+          const presented = sessionPresentation(session, client.timeZone);
+          if (!sessionId || !cinema?.id) continue;
+          if (session.salesStatus && session.salesStatus !== 'on_sale') continue;
+          if (!Number.isFinite(sessionTime) || sessionTime <= instant.getTime()) continue;
+          if (presented.date < firstDate || presented.date > lastDate) continue;
+          if (cinemaIds.size && !cinemaIds.has(String(cinema.id))) continue;
+
+          const seatKey = String(sessionId);
+          let planPromise = seatPlanCache.get(seatKey);
+          if (!planPromise) {
+            if (checkedSessions >= maxSessionsPerRun) continue;
+            checkedSessions += 1;
+            planPromise = client.getSeatPlan({ sessionId });
+            seatPlanCache.set(seatKey, planPromise);
           }
-          let sessions;
+          let plan;
           try {
-            sessions = await sessionsPromise;
+            plan = await planPromise;
           } catch (error) {
             failures += 1;
-            logger.error('kino sessions request failed', {
-              movieId: String(movie.movie_id),
-              date,
+            logger.error('Ticketon cinema seat plan request failed', {
+              sessionId: String(sessionId),
               error: error?.message || String(error)
             });
             continue;
           }
 
-          for (const item of sessions) {
-            const session = item.session || item;
-            const cinema = item.cinema || { id: session.cinema_id, name: `Кинотеатр ${session.cinema_id}` };
-            const hall = item.hall || null;
-            const sessionId = session.session_id || session.id;
-            if (!sessionId || (cinemaIds.size && !cinemaIds.has(String(cinema.id)))) continue;
-            if (!sessionIsFuture(session, date, instant, client.timeZone)) continue;
+          const block = findBlock(plan, adjacentSeats);
+          if (!block) continue;
+          const notification = {
+            chatId,
+            sessionId,
+            movieId: movie.id,
+            cinemaId: cinema.id
+          };
+          const claimed = await db.claimTicketonNotification(notification);
+          if (!claimed) continue;
 
-            const seatKey = String(sessionId);
-            let planPromise = seatPlanCache.get(seatKey);
-            if (!planPromise) {
-              if (checkedSessions >= maxSessionsPerRun) continue;
-              checkedSessions += 1;
-              planPromise = client.getSeatPlan({
-                sessionId,
-                movieId: movie.movie_id,
-                cinemaId: cinema.id
-              });
-              seatPlanCache.set(seatKey, planPromise);
-            }
-            let plan;
-            try {
-              plan = await planPromise;
-            } catch (error) {
-              failures += 1;
-              logger.error('kino seat plan request failed', {
-                sessionId: String(sessionId),
-                error: error?.message || String(error)
-              });
-              if (error?.code === 'kino_endpoint_unavailable') {
-                endpointUnavailable = true;
-                break chatLoop;
-              }
-              continue;
-            }
-
-            const block = findAdjacentSeatBlock(plan?.hall_plan || plan?.hallPlan, adjacentSeats);
-            if (!block) continue;
-            const notification = {
-              chatId,
-              sessionId,
-              movieId: movie.movie_id,
-              cinemaId: cinema.id
-            };
-            const claimed = await db.claimKinoNotification(notification);
-            if (!claimed) continue;
-
-            const url = `${client.baseUrl}/en/movie/${movie.movie_id}/tickets/${sessionId}` +
-              `?cityId=${client.cityId}&cinemaId=${cinema.id}`;
-            const alert = {
-              chatId,
-              text: alertText({
-                movie: { id: movie.movie_id, name: movie.movie_name },
-                cinema,
-                hall,
-                session,
-                date,
-                block,
-                url
-              }),
+          const url = client.eventUrl(movie, sessionId);
+          const alert = {
+            chatId,
+            text: alertText({
               movie,
               cinema,
               hall,
               session,
-              date,
               block,
-              url
-            };
-            try {
-              await notify(alert);
-              sent += 1;
-            } catch (error) {
-              await db.releaseKinoNotification(notification);
-              failures += 1;
-              logger.error('kino notification failed', {
-                chatId,
-                sessionId: String(sessionId),
-                error: error?.message || String(error)
-              });
-            }
+              url,
+              timeZone: client.timeZone
+            }),
+            movie,
+            cinema,
+            hall,
+            session,
+            date: presented.date,
+            block,
+            url
+          };
+          try {
+            await notify(alert);
+            sent += 1;
+          } catch (error) {
+            await db.releaseTicketonNotification(notification);
+            failures += 1;
+            logger.error('Ticketon cinema notification failed', {
+              chatId,
+              sessionId: String(sessionId),
+              error: error?.message || String(error)
+            });
           }
         }
       }
     }
 
-    await db.deleteKinoNotificationsBefore?.(client.addDays(client.today(), -90));
-    return {
-      sent,
-      checkedSessions,
-      failures,
-      ...(endpointUnavailable ? { skipped: 'seat_endpoint_unavailable' } : {})
-    };
+    await db.deleteTicketonNotificationsBefore?.(client.addDays(client.today(), -90));
+    return { sent, checkedSessions, failures };
   };
 
   const startScheduler = ({ notify, runExclusive } = {}) => {
-    if (!db || !client.seatPlansEnabled || env.KINO_MONITOR_ENABLED === 'false') return () => {};
+    if (!db || env.TICKETON_MONITOR_ENABLED === 'false') return () => {};
     let running = false;
     const tick = async () => {
       if (running) return;
       running = true;
       try {
         if (runExclusive) {
-          await runExclusive('kino-seat-monitor', () => runDueChecks({ notify }));
+          await runExclusive('ticketon-cinema-seat-monitor', () => runDueChecks({ notify }));
         } else {
           await runDueChecks({ notify });
         }
       } catch (error) {
-        logger.error('kino scheduler failed', error);
+        logger.error('Ticketon cinema scheduler failed', error);
       } finally {
         running = false;
       }
@@ -396,10 +402,11 @@ export const createKinoMonitorService = ({
     void tick();
     const timer = setInterval(tick, intervalMs);
     timer.unref?.();
-    logger.log('kino scheduler started', {
+    logger.log('Ticketon cinema scheduler started', {
       intervalMs,
       lookaheadDays,
       cityId: client.cityId,
+      cityCode: client.cityCode,
       adjacentSeats
     });
     return () => clearInterval(timer);
@@ -407,7 +414,7 @@ export const createKinoMonitorService = ({
 
   return {
     enabled: Boolean(db),
-    monitoringEnabled: Boolean(db && client.seatPlansEnabled && env.KINO_MONITOR_ENABLED !== 'false'),
+    monitoringEnabled: Boolean(db && env.TICKETON_MONITOR_ENABLED !== 'false'),
     rootMenu,
     listMenu,
     handleCallback,

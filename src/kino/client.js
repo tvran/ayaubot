@@ -1,17 +1,15 @@
 import { fetchWithTimeout } from '../runtime/fetch.js';
 
-const defaultBaseUrl = 'https://kino.kz';
+const defaultBaseUrl = 'https://ticketon.kz';
+const defaultApiUrl = 'https://api-gw.ticketon.kz';
+const defaultCityCode = 'astana';
 const defaultTimeZone = 'Asia/Almaty';
+const cinemaCategory = 'cinema';
 
 const positiveInteger = (value, fallback) => {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 };
-
-const unwrapResponse = (body) => body?.result?.data?.json ?? body?.data?.json ?? body?.data ?? body;
-
-const errorMessage = (body, status) =>
-  body?.error?.json?.message || body?.error?.message || body?.message || `HTTP ${status}`;
 
 const zonedDate = (instant, timeZone) => {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -32,107 +30,75 @@ const addDays = (date, days) => {
   return value.toISOString().slice(0, 10);
 };
 
-const replaceTemplate = (template, values) => template.replace(/\{([a-zA-Z]+)\}/gu, (match, key) =>
-  key in values ? encodeURIComponent(String(values[key])) : match);
-
-const balancedJsonObjects = (value, marker) => {
-  const objects = [];
-  let markerIndex = value.indexOf(marker);
-  while (markerIndex >= 0) {
-    const starts = [
-      value.lastIndexOf('{"seance_id"', markerIndex),
-      value.lastIndexOf('{"hall_plan"', markerIndex)
-    ].filter((start) => start >= 0 && markerIndex - start < 50_000);
-    for (const start of starts) {
-      let depth = 0;
-      let quoted = false;
-      let escaped = false;
-      for (let index = start; index < value.length; index += 1) {
-        const character = value[index];
-        if (quoted) {
-          if (escaped) escaped = false;
-          else if (character === '\\') escaped = true;
-          else if (character === '"') quoted = false;
-          continue;
-        }
-        if (character === '"') quoted = true;
-        else if (character === '{') depth += 1;
-        else if (character === '}') {
-          depth -= 1;
-          if (depth === 0) {
-            objects.push(value.slice(start, index + 1));
-            break;
-          }
-        }
-      }
-    }
-    markerIndex = value.indexOf(marker, markerIndex + marker.length);
-  }
-  return objects;
+const isCinemaEvent = (event) => {
+  const categories = Array.isArray(event?.categories) ? event.categories : [];
+  const mainCategory = categories.find((category) => category?.is_main === true);
+  if (mainCategory) return mainCategory.alias === cinemaCategory;
+  return categories.some((category) => category?.alias === cinemaCategory);
 };
 
-export const extractSeatPlanFromHtml = (html) => {
-  const chunks = [];
-  const pattern = /self\.__next_f\.push\(\[1,("(?:\\.|[^"\\])*")\]\)/gsu;
-  for (const match of String(html || '').matchAll(pattern)) {
-    try {
-      chunks.push(JSON.parse(match[1]));
-    } catch {}
-  }
-  const candidates = [String(html || ''), chunks.join('')];
-  for (const candidate of candidates) {
-    for (const json of balancedJsonObjects(candidate, '"hall_plan"')) {
-      try {
-        const parsed = JSON.parse(json);
-        if (parsed?.hall_plan?.places) return parsed;
-      } catch {}
-    }
-  }
-  return null;
-};
+const normalizeEvent = (event) => ({
+  id: event.event_id,
+  name: event.name,
+  slug: event.slug,
+  categories: event.categories || []
+});
 
-export const createKinoClient = ({
+const normalizeSession = (session, date) => ({
+  id: session.id,
+  date,
+  startTime: session.start_time,
+  endTime: session.end_time,
+  salesStatus: session.sales_status,
+  language: session.language,
+  minPrice: session.min_price,
+  currency: session.currency,
+  cinema: {
+    id: session.venue_id,
+    name: session.venue || session.venue_details?.name,
+    address: session.address || session.venue_details?.address
+  },
+  hall: {
+    id: session.hall_id,
+    name: session.hall
+  }
+});
+
+const errorMessage = (body, status) =>
+  body?.message || body?.error?.message || body?.error || `HTTP ${status}`;
+
+export const createTicketonClient = ({
   env = process.env,
   fetchImpl = fetch,
   now = () => new Date()
 } = {}) => {
-  const baseUrl = String(env.KINO_BASE_URL || defaultBaseUrl).replace(/\/+$/u, '');
-  const cityId = positiveInteger(env.KINO_CITY_ID, 2);
-  const timeZone = env.KINO_TIME_ZONE || defaultTimeZone;
-  const timeoutMs = positiveInteger(env.KINO_REQUEST_TIMEOUT_MS, 15_000);
-  const seatPlanUrlTemplate = String(env.KINO_SEAT_PLAN_URL_TEMPLATE || '').trim();
-  const seatPlanProcedure = String(env.KINO_SEAT_PLAN_PROCEDURE || '').trim();
-  const sessionCookie = String(env.KINO_SESSION_COOKIE || '').trim();
-  const siteCookie = [
-    `city=${cityId}`,
-    sessionCookie
-  ].filter(Boolean).join('; ');
+  const baseUrl = String(env.TICKETON_BASE_URL || defaultBaseUrl).replace(/\/+$/u, '');
+  const apiUrl = String(env.TICKETON_API_URL || defaultApiUrl).replace(/\/+$/u, '');
+  const cityId = positiveInteger(env.TICKETON_CITY_ID, 1);
+  const cityCode = String(env.TICKETON_CITY_CODE || defaultCityCode).trim().toLowerCase();
+  const timeZone = env.TICKETON_TIME_ZONE || defaultTimeZone;
+  const timeoutMs = positiveInteger(env.TICKETON_REQUEST_TIMEOUT_MS, 15_000);
 
-  const requestJson = async (url, options = {}, label = 'Kino.kz request') => {
+  const requestJson = async (path, searchParams, label) => {
+    const url = new URL(path, `${apiUrl}/`);
+    for (const [key, value] of Object.entries(searchParams || {})) {
+      if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
+    }
     const response = await fetchWithTimeout(fetchImpl, url, {
-      ...options,
       headers: {
         accept: 'application/json',
-        'user-agent': 'AyauBot/0.1 kino monitor',
-        cookie: siteCookie,
-        ...options.headers
+        'accept-language': 'ru',
+        'user-agent': 'AyauBot/0.1 Ticketon cinema monitor'
       }
     }, { timeoutMs, label });
     const body = await response.json().catch(() => null);
-    if (!response.ok || body?.error) {
+    if (!response.ok || !body) {
       const error = new Error(`${label}: ${errorMessage(body, response.status)}`);
-      if ([401, 403, 404].includes(response.status)) error.code = 'kino_endpoint_unavailable';
+      error.code = 'ticketon_request_failed';
+      error.status = response.status;
       throw error;
     }
-    return unwrapResponse(body);
-  };
-
-  const trpcQuery = async (procedure, input) => {
-    const url = new URL(`${baseUrl}/api/trpc/${procedure}`);
-    url.searchParams.set('input', JSON.stringify({ json: input }));
-    return requestJson(url, {
-      headers: { 'x-trpc-source': 'nextjs-react' }
-    }, `Kino.kz ${procedure}`);
+    return body;
   };
 
   const today = () => zonedDate(now(), timeZone);
@@ -140,82 +106,117 @@ export const createKinoClient = ({
   const listMovies = async ({ days = 7 } = {}) => {
     const startDate = today();
     const endDate = addDays(startDate, Math.max(0, days - 1));
-    const movies = await trpcQuery('sessions.findMovies', { startDate, endDate });
-    return Array.isArray(movies) ? movies : [];
+    const loadPage = (page) => requestJson('catalog/v2/events', {
+      city: cityCode,
+      category: cinemaCategory,
+      session_date_from: `${startDate}T00:00:00.000Z`,
+      session_date_to: `${endDate}T23:59:59.999Z`,
+      page,
+      page_size: 100,
+      sort_by: 'next_session_at',
+      sort_dir: 'asc'
+    }, 'Ticketon cinema catalog');
+
+    const first = await loadPage(1);
+    const pages = Math.max(positiveInteger(first?.meta?.total_pages, 1), 1);
+    const rest = pages > 1
+      ? await Promise.all(Array.from({ length: pages - 1 }, (_, index) => loadPage(index + 2)))
+      : [];
+    return [first, ...rest]
+      .flatMap((page) => Array.isArray(page?.data) ? page.data : [])
+      .filter(isCinemaEvent)
+      .map(normalizeEvent);
   };
 
   const listCinemas = async () => {
-    const cinemas = await trpcQuery('cinema.getCinemas', null);
-    return Array.isArray(cinemas) ? cinemas : [];
+    const result = await requestJson('catalog/v1/dynamic-filters/venues', {
+      category_alias: cinemaCategory,
+      city_code: cityCode
+    }, 'Ticketon cinema venues');
+    return (Array.isArray(result?.data) ? result.data : []).map((venue) => ({
+      id: venue.venue_id,
+      name: venue.name,
+      slug: venue.slug
+    }));
   };
 
-  const listSessions = async (movieId, date) => {
-    const result = await trpcQuery('sessions.getSessions', {
-      id: Number(movieId),
-      date
+  const listSessions = async (movieId) => {
+    const result = await requestJson(`event/v1/events/${encodeURIComponent(movieId)}/sessions`, {
+      all_dates: 'true',
+      city_id: cityId
+    }, 'Ticketon movie sessions');
+    return (Array.isArray(result?.data) ? result.data : []).flatMap((group) =>
+      (Array.isArray(group?.sessions) ? group.sessions : [])
+        .map((session) => normalizeSession(session, group.date)));
+  };
+
+  const getSeatPlan = async ({ sessionId }) => {
+    const [staticHall, dynamicHall] = await Promise.all([
+      requestJson(`event-widget/v1/session/${encodeURIComponent(sessionId)}/hall/static`, null,
+        'Ticketon static hall'),
+      requestJson(`event-widget/v1/session/${encodeURIComponent(sessionId)}/hall/dynamic`, null,
+        'Ticketon hall availability')
+    ]);
+    const dynamicSectors = new Map((Array.isArray(dynamicHall?.sectors) ? dynamicHall.sectors : [])
+      .map((sector) => [String(sector.id), sector]));
+    const sectors = (Array.isArray(staticHall?.sectors) ? staticHall.sectors : []).filter((sector) => {
+      const dynamic = dynamicSectors.get(String(sector.id));
+      return !sector.is_unbound_seats && !dynamic?.is_unbound_seats && dynamic?.status !== 'inactive';
     });
-    return Array.isArray(result?.sessions) ? result.sessions : [];
+
+    const sections = await Promise.all(sectors.map(async (sector) => {
+      const [staticSector, dynamicSector] = await Promise.all([
+        requestJson(
+          `event-widget/v1/session/${encodeURIComponent(sessionId)}/sector/${encodeURIComponent(sector.id)}/static`,
+          null,
+          'Ticketon static sector'
+        ),
+        requestJson(
+          `event-widget/v1/session/${encodeURIComponent(sessionId)}/sector/${encodeURIComponent(sector.id)}/dynamic`,
+          null,
+          'Ticketon sector availability'
+        )
+      ]);
+      const availability = new Map((Array.isArray(dynamicSector?.seats) ? dynamicSector.seats : [])
+        .map((seat) => [String(seat.id), Number(seat.count)]));
+      const places = (Array.isArray(staticSector?.seats) ? staticSector.seats : []).map((seat) => ({
+        id: String(seat.id),
+        row: String(seat.row),
+        place: String(seat.num),
+        status: (availability.get(String(seat.id)) || 0) > 0 ? 1 : 0,
+        x: seat.x,
+        y: seat.y,
+        width: seat.w,
+        height: seat.h,
+        tariffId: seat.tariff_id
+      }));
+      return {
+        id: String(sector.id),
+        name: sector.name,
+        hallPlan: { places }
+      };
+    }));
+
+    return { sessionId: String(sessionId), sections };
   };
 
-  const getSeatPlan = async ({ sessionId, movieId, cinemaId }) => {
-    const input = {
-      seance_id: Number(sessionId),
-      city_id: cityId,
-      client: 'web'
-    };
-    if (seatPlanProcedure) return trpcQuery(seatPlanProcedure, input);
-    if (!seatPlanUrlTemplate && !sessionCookie) {
-      const error = new Error('KINO_SESSION_COOKIE, KINO_SEAT_PLAN_URL_TEMPLATE or KINO_SEAT_PLAN_PROCEDURE is required for seat monitoring.');
-      error.code = 'kino_seat_plan_not_configured';
-      throw error;
-    }
-
-    const url = seatPlanUrlTemplate ? replaceTemplate(seatPlanUrlTemplate, {
-      sessionId,
-      seanceId: sessionId,
-      movieId,
-      cinemaId,
-      cityId,
-      input: JSON.stringify({ json: input })
-    }) : `${baseUrl}/en/movie/${movieId}/tickets/${sessionId}` +
-      `?cityId=${cityId}&cinemaId=${cinemaId}`;
-    const response = await fetchWithTimeout(fetchImpl, url, {
-      headers: {
-        accept: 'application/json, text/html;q=0.9',
-        'user-agent': 'AyauBot/0.1 kino monitor',
-        cookie: siteCookie
-      }
-    }, { timeoutMs, label: 'Kino.kz seat plan' });
-    const contentType = response.headers.get('content-type') || '';
-    if (contentType.includes('json')) {
-      const body = await response.json().catch(() => null);
-      if (!response.ok || body?.error) {
-        const error = new Error(`Kino.kz seat plan: ${errorMessage(body, response.status)}`);
-        if ([401, 403, 404].includes(response.status)) error.code = 'kino_endpoint_unavailable';
-        throw error;
-      }
-      return unwrapResponse(body);
-    }
-    const html = await response.text();
-    const plan = extractSeatPlanFromHtml(html);
-    if (!response.ok || !plan) {
-      const error = new Error('Kino.kz seat plan is unavailable: refresh KINO_SESSION_COOKIE or configure the current read-only seat endpoint.');
-      error.code = 'kino_endpoint_unavailable';
-      throw error;
-    }
-    return plan;
+  const eventUrl = ({ slug }, sessionId) => {
+    const event = `${baseUrl}/cinema/event/${encodeURIComponent(slug)}`;
+    return sessionId ? `${event}/session/${encodeURIComponent(sessionId)}` : event;
   };
 
   return {
     baseUrl,
+    apiUrl,
     cityId,
+    cityCode,
     timeZone,
-    seatPlansEnabled: Boolean(seatPlanProcedure || seatPlanUrlTemplate || sessionCookie),
     today,
     addDays,
     listMovies,
     listCinemas,
     listSessions,
-    getSeatPlan
+    getSeatPlan,
+    eventUrl
   };
 };

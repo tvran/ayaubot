@@ -65,7 +65,7 @@ export const findAdjacentSeatBlock = (hallPlan, requiredSeats = 2) => {
   const rows = rowsByPosition(places);
   if (!rows.length) return null;
 
-  // Kino.kz numbers rows from the screen outwards. Keep the middle row for odd halls.
+  // Ticketon cinema plans number rows from the screen outwards. Keep the middle row for odd halls.
   const upperRows = rows.slice(Math.floor(rows.length / 2));
   for (const row of upperRows) {
     const available = sortSeats(row.places.filter((place) => Number(place.status) === 1));

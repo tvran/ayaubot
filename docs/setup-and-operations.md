@@ -79,13 +79,12 @@ Npm scripts:
 | `BIRTHDAY_TIME_ZONE` | Необязательна | Часовой пояс календаря, по умолчанию `Asia/Almaty` |
 | `BIRTHDAY_CHECK_HOUR` | Необязательна | Первый локальный час отправки, по умолчанию `9` |
 | `BIRTHDAY_CHECK_INTERVAL_MS` | Необязательна | Интервал проверок, по умолчанию `900000`, минимум 60 секунд |
-| `KINO_MONITOR_ENABLED` | Необязательна | `false` отключает scheduler kino.kz; по умолчанию включён при наличии доступа к карте зала |
-| `KINO_CITY_ID`, `KINO_TIME_ZONE` | Необязательны | Город kino.kz и локальный часовой пояс; по умолчанию `2` (Алматы) и `Asia/Almaty` |
-| `KINO_CHECK_INTERVAL_MS`, `KINO_LOOKAHEAD_DAYS` | Необязательны | Интервал и горизонт мониторинга: 3600000 ms и 7 дней |
-| `KINO_ADJACENT_SEATS`, `KINO_MAX_SESSIONS_PER_RUN` | Необязательны | Минимальный блок мест и лимит карт за tick: 2 и 300 |
-| `KINO_REQUEST_TIMEOUT_MS` | Необязательна | Timeout read-only запроса kino.kz, по умолчанию 15000 ms |
-| `KINO_SESSION_COOKIE` | Для HTML-карты зала | Секретная cookie-строка авторизованной сессии kino.kz; требует обновления после истечения |
-| `KINO_SEAT_PLAN_URL_TEMPLATE`, `KINO_SEAT_PLAN_PROCEDURE` | Альтернатива cookie | Актуальный JSON URL-template либо tRPC procedure карты зала; детали в [компонентной документации](components/kino-monitor.md) |
+| `TICKETON_MONITOR_ENABLED` | Необязательна | `false` отключает scheduler Ticketon; по умолчанию включён |
+| `TICKETON_BASE_URL`, `TICKETON_API_URL` | Необязательны | Сайт и публичный JSON API Ticketon |
+| `TICKETON_CITY_ID`, `TICKETON_CITY_CODE`, `TICKETON_TIME_ZONE` | Необязательны | По умолчанию Астана: `1`, `astana`, `Asia/Almaty` |
+| `TICKETON_CHECK_INTERVAL_MS`, `TICKETON_LOOKAHEAD_DAYS` | Необязательны | Интервал и горизонт мониторинга: 3600000 ms и 7 дней |
+| `TICKETON_ADJACENT_SEATS`, `TICKETON_MAX_SESSIONS_PER_RUN` | Необязательны | Минимальный блок мест и лимит карт за tick: 2 и 300 |
+| `TICKETON_REQUEST_TIMEOUT_MS` | Необязательна | Timeout read-only запроса Ticketon, по умолчанию 15000 ms |
 | `SCHEDULER_LEASE_MS` | Необязательна | TTL distributed scheduler lease, по умолчанию 10 минут |
 | `WORKER_CONCURRENCY`, `WORKER_HEAVY_CONCURRENCY` | Необязательны | Default/heavy параллельность, по умолчанию 4/1 |
 | `WORKER_JOB_TIMEOUT_MS`, `WORKER_HEAVY_JOB_TIMEOUT_MS` | Необязательны | Общий timeout задачи, 120/180 секунд |
@@ -97,7 +96,7 @@ Npm scripts:
 | `METRICS_TOKEN` | Рекомендуется | Bearer token для `/metrics`; без него endpoint открыт |
 | `OPENAI_TIMEOUT_MS` | Необязательна | Таймаут `#итогидня`, по умолчанию 45 секунд |
 
-Файл `.env.example` содержит основной минимум, PostgreSQL, media-сервис, планировщик дней рождения и монитор kino.kz, но не перечисляет `APP_URL`, `WEBHOOK_PATH`, `PORT` и множественный `ALLOWED_CHAT_IDS`.
+Файл `.env.example` содержит основной минимум, PostgreSQL, media-сервис, планировщик дней рождения и монитор кино Ticketon, но не перечисляет `APP_URL`, `WEBHOOK_PATH`, `PORT` и множественный `ALLOWED_CHAT_IDS`.
 
 ## Установка yt-dlp и ffmpeg
 

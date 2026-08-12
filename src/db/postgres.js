@@ -679,6 +679,100 @@ export const createPostgresDb = async (env = process.env) => {
 
     async deleteKinoNotificationsBefore(date) {
       await query('delete from kino_notifications where notified_at < $1::date', [date]);
+    },
+
+    async listTicketonMovieWatches(chatId) {
+      const params = [];
+      const where = chatId === undefined ? '' : 'where chat_id = $1';
+      if (chatId !== undefined) params.push(chatId);
+      const result = await query(
+        `
+        select chat_id, movie_id, movie_name, movie_slug, created_by, created_at
+        from ticketon_watched_movies
+        ${where}
+        order by chat_id, movie_name, movie_id
+        `,
+        params
+      );
+      return result.rows;
+    },
+
+    async listTicketonCinemaWatches(chatId) {
+      const params = [];
+      const where = chatId === undefined ? '' : 'where chat_id = $1';
+      if (chatId !== undefined) params.push(chatId);
+      const result = await query(
+        `
+        select chat_id, cinema_id, cinema_name, created_by, created_at
+        from ticketon_watched_cinemas
+        ${where}
+        order by chat_id, cinema_name, cinema_id
+        `,
+        params
+      );
+      return result.rows;
+    },
+
+    async toggleTicketonMovieWatch({ chatId, movieId, movieName, movieSlug, userId }) {
+      const removed = await query(
+        'delete from ticketon_watched_movies where chat_id = $1 and movie_id = $2',
+        [chatId, movieId]
+      );
+      if (removed.rowCount > 0) return false;
+      const inserted = await query(
+        `
+        insert into ticketon_watched_movies (
+          chat_id, movie_id, movie_name, movie_slug, created_by
+        )
+        values ($1, $2, $3, $4, $5)
+        on conflict (chat_id, movie_id) do nothing
+        returning 1
+        `,
+        [chatId, movieId, movieName, movieSlug, userId || null]
+      );
+      return inserted.rowCount > 0;
+    },
+
+    async toggleTicketonCinemaWatch({ chatId, cinemaId, cinemaName, userId }) {
+      const removed = await query(
+        'delete from ticketon_watched_cinemas where chat_id = $1 and cinema_id = $2',
+        [chatId, cinemaId]
+      );
+      if (removed.rowCount > 0) return false;
+      const inserted = await query(
+        `
+        insert into ticketon_watched_cinemas (chat_id, cinema_id, cinema_name, created_by)
+        values ($1, $2, $3, $4)
+        on conflict (chat_id, cinema_id) do nothing
+        returning 1
+        `,
+        [chatId, cinemaId, cinemaName, userId || null]
+      );
+      return inserted.rowCount > 0;
+    },
+
+    async claimTicketonNotification({ chatId, sessionId, movieId, cinemaId }) {
+      const result = await query(
+        `
+        insert into ticketon_notifications (chat_id, session_id, movie_id, cinema_id)
+        values ($1, $2, $3, $4)
+        on conflict do nothing
+        returning 1
+        `,
+        [chatId, sessionId, movieId, cinemaId]
+      );
+      return result.rowCount > 0;
+    },
+
+    async releaseTicketonNotification({ chatId, sessionId }) {
+      await query(
+        'delete from ticketon_notifications where chat_id = $1 and session_id = $2',
+        [chatId, sessionId]
+      );
+    },
+
+    async deleteTicketonNotificationsBefore(date) {
+      await query('delete from ticketon_notifications where notified_at < $1::date', [date]);
     }
   };
 };

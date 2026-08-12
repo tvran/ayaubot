@@ -752,7 +752,7 @@ export const createBotApp = ({
       });
       await api('answerCallbackQuery', {
         callback_query_id: callback.id,
-        text: 'Не смог обновить афишу kino.kz. Попробуй ещё раз чуть позже.',
+        text: 'Не смог обновить киноафишу Ticketon. Попробуй ещё раз чуть позже.',
         show_alert: true
       }).catch(() => {});
     }
@@ -880,7 +880,7 @@ export const createBotApp = ({
         return;
       }
       if (!kino) {
-        await sendMessage(message.chat.id, 'Монитор kino.kz пока не настроен.', message.message_id);
+        await sendMessage(message.chat.id, 'Монитор кино Ticketon пока не настроен.', message.message_id);
         return;
       }
       try {
@@ -896,7 +896,7 @@ export const createBotApp = ({
         });
         await sendMessage(
           message.chat.id,
-          'Не смог загрузить афишу kino.kz. Попробуй ещё раз чуть позже.',
+          'Не смог загрузить киноафишу Ticketon. Попробуй ещё раз чуть позже.',
           message.message_id
         );
       }
@@ -910,10 +910,10 @@ export const createBotApp = ({
   const handleUpdate = (update, executionContext = {}) =>
     context.run(executionContext, () => handleUpdateInner(update));
 
-  const notifyKinoAvailability = (alert) => mentionChatMembers({
+  const notifyCinemaAvailability = (alert) => mentionChatMembers({
     chatId: alert.chatId,
     header: alert.text
   });
 
-  return { api, chatAllowed, handleUpdate, notifyKinoAvailability };
+  return { api, chatAllowed, handleUpdate, notifyCinemaAvailability };
 };

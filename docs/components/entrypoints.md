@@ -26,11 +26,11 @@ Handler:
 
 ## `src/worker/index.js`: Railway worker-service
 
-Команда `npm run worker` создаёт Bot App и все его зависимости, запускает PostgreSQL queue worker, birthday scheduler, часовой kino.kz scheduler и небольшой HTTP-сервер для `/health` и `/metrics`.
+Команда `npm run worker` создаёт Bot App и все его зависимости, запускает PostgreSQL queue worker, birthday scheduler, часовой Ticketon cinema scheduler и небольшой HTTP-сервер для `/health` и `/metrics`.
 
 Worker обрабатывает разные чаты параллельно, но использует PostgreSQL chat lease для последовательности внутри одного чата. Тяжёлые задачи имеют отдельный лимит конкурентности. При `SIGTERM` worker прекращает polling, останавливает scheduler и ждёт активные задачи до 20 секунд.
 
-Birthday scheduler и kino.kz scheduler выполняют tick через `scheduler_leases`, поэтому несколько worker replicas не дублируют планировщики. Delivery markers остаются вторым уровнем идемпотентности.
+Birthday scheduler и Ticketon cinema scheduler выполняют tick через `scheduler_leases`, поэтому несколько worker replicas не дублируют планировщики. Delivery markers остаются вторым уровнем идемпотентности.
 
 ## `scripts/set-webhook.js`: регистрация
 
