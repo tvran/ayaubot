@@ -587,6 +587,98 @@ export const createPostgresDb = async (env = process.env) => {
 
     async deleteBirthdayNotificationsBefore(date) {
       await query('delete from birthday_notifications where event_date < $1', [date]);
+    },
+
+    async listKinoMovieWatches(chatId) {
+      const params = [];
+      const where = chatId === undefined ? '' : 'where chat_id = $1';
+      if (chatId !== undefined) params.push(chatId);
+      const result = await query(
+        `
+        select chat_id, movie_id, movie_name, created_by, created_at
+        from kino_watched_movies
+        ${where}
+        order by chat_id, movie_name, movie_id
+        `,
+        params
+      );
+      return result.rows;
+    },
+
+    async listKinoCinemaWatches(chatId) {
+      const params = [];
+      const where = chatId === undefined ? '' : 'where chat_id = $1';
+      if (chatId !== undefined) params.push(chatId);
+      const result = await query(
+        `
+        select chat_id, cinema_id, cinema_name, created_by, created_at
+        from kino_watched_cinemas
+        ${where}
+        order by chat_id, cinema_name, cinema_id
+        `,
+        params
+      );
+      return result.rows;
+    },
+
+    async toggleKinoMovieWatch({ chatId, movieId, movieName, userId }) {
+      const removed = await query(
+        'delete from kino_watched_movies where chat_id = $1 and movie_id = $2',
+        [chatId, movieId]
+      );
+      if (removed.rowCount > 0) return false;
+      const inserted = await query(
+        `
+        insert into kino_watched_movies (chat_id, movie_id, movie_name, created_by)
+        values ($1, $2, $3, $4)
+        on conflict (chat_id, movie_id) do nothing
+        returning 1
+        `,
+        [chatId, movieId, movieName, userId || null]
+      );
+      return inserted.rowCount > 0;
+    },
+
+    async toggleKinoCinemaWatch({ chatId, cinemaId, cinemaName, userId }) {
+      const removed = await query(
+        'delete from kino_watched_cinemas where chat_id = $1 and cinema_id = $2',
+        [chatId, cinemaId]
+      );
+      if (removed.rowCount > 0) return false;
+      const inserted = await query(
+        `
+        insert into kino_watched_cinemas (chat_id, cinema_id, cinema_name, created_by)
+        values ($1, $2, $3, $4)
+        on conflict (chat_id, cinema_id) do nothing
+        returning 1
+        `,
+        [chatId, cinemaId, cinemaName, userId || null]
+      );
+      return inserted.rowCount > 0;
+    },
+
+    async claimKinoNotification({ chatId, sessionId, movieId, cinemaId }) {
+      const result = await query(
+        `
+        insert into kino_notifications (chat_id, session_id, movie_id, cinema_id)
+        values ($1, $2, $3, $4)
+        on conflict do nothing
+        returning 1
+        `,
+        [chatId, sessionId, movieId, cinemaId]
+      );
+      return result.rowCount > 0;
+    },
+
+    async releaseKinoNotification({ chatId, sessionId }) {
+      await query(
+        'delete from kino_notifications where chat_id = $1 and session_id = $2',
+        [chatId, sessionId]
+      );
+    },
+
+    async deleteKinoNotificationsBefore(date) {
+      await query('delete from kino_notifications where notified_at < $1::date', [date]);
     }
   };
 };

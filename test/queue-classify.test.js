@@ -21,12 +21,26 @@ test('classifies rendering, summary and external video updates as heavy', () => 
   assert.equal(classifyUpdateLane(update('/help')), 'default');
 });
 
-test('builds a durable queue record only for supported message updates', () => {
+test('builds durable queue records for messages and inline keyboard callbacks', () => {
   assert.deepEqual(updateQueueRecord(update('/help')), {
     updateId: 123,
     chatId: -1001,
     lane: 'default',
     payload: update('/help')
   });
-  assert.equal(updateQueueRecord({ update_id: 124, callback_query: {} }), null);
+  const callback = {
+    update_id: 124,
+    callback_query: {
+      id: 'callback-1',
+      message: { message_id: 11, chat: { id: -1001 } },
+      data: 'kino:root'
+    }
+  };
+  assert.deepEqual(updateQueueRecord(callback), {
+    updateId: 124,
+    chatId: -1001,
+    lane: 'default',
+    payload: callback
+  });
+  assert.equal(updateQueueRecord({ update_id: 125, callback_query: {} }), null);
 });

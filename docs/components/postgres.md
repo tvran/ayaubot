@@ -99,10 +99,16 @@ Adapter возвращает публичное поле `pool` для queue/lea
 
 Базовая историческая схема по-прежнему идемпотентно создаёт отсутствующие объекты при старте. Новые production-изменения выполняются версионированными SQL-файлами из `migrations/` через `npm run migrate`. `schema_migrations` хранит checksum и запрещает незаметно переписать применённую миграцию.
 
+## Таблицы монитора kino.kz
+
+`kino_watched_movies` хранит выбранные фильмы по ключу `(chat_id, movie_id)`, отображаемое имя и автора изменения. `kino_watched_cinemas` имеет тот же контракт для фильтра кинотеатров. Отсутствие строк кинотеатров у чата означает проверку всех кинотеатров настроенного города.
+
+`kino_notifications` содержит delivery marker `(chat_id, session_id)` и связанные IDs фильма/кинотеатра. `claimKinoNotification` вставляет его через `ON CONFLICT DO NOTHING` перед Telegram-вызовом. Временная ошибка освобождает marker; успешный сеанс больше не оповещается. Записи старше 90 дней очищает scheduler.
+
 ## Очередь и leases
 
 `telegram_update_jobs` хранит идемпотентную очередь по `update_id`, lane, status, attempts и timestamps. Частичные индексы ускоряют выбор готовых задач и проверку более старых update того же чата. Completed payload очищается сразу, completed rows удаляются через 7 дней; dead-letter по умолчанию хранится 30 дней.
 
 `telegram_chat_job_locks` содержит краткоживущую аренду chat ID и гарантирует последовательность внутри одного чата при нескольких worker loops или replicas.
 
-`scheduler_leases` реализует singleton-запуск периодических задач. Birthday delivery markers остаются отдельной гарантией идемпотентности конкретного уведомления.
+`scheduler_leases` реализует singleton-запуск периодических задач. Birthday и kino.kz delivery markers остаются отдельной гарантией идемпотентности конкретного уведомления.

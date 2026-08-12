@@ -6,6 +6,8 @@ import { createPostgresDb } from '../db/postgres.js';
 import { createDemotivationFrameExtractor } from '../demotivation/frame.js';
 import { createPercentGameService } from '../games/percent.js';
 import { createMediaDownloadService } from '../media/service.js';
+import { createKinoClient } from '../kino/client.js';
+import { createKinoMonitorService } from '../kino/service.js';
 import { createMetrics, startEventLoopLagMonitor } from '../observability/metrics.js';
 import { createPostgresUpdateQueue } from '../queue/postgres.js';
 import { createUpdateWorker } from '../queue/worker.js';
@@ -31,6 +33,8 @@ const redis = createRedisClient();
 const redisGateway = createRedisCircuit({ redis, metrics });
 const analytics = createAnalyticsService({ db });
 const birthdays = createBirthdayService({ db });
+const kinoClient = createKinoClient();
+const kino = createKinoMonitorService({ db, client: kinoClient });
 const mediaDownloader = createMediaDownloadService();
 const demotivationFrameExtractor = createDemotivationFrameExtractor();
 const percentGame = createPercentGameService({ redis, redisGateway });
@@ -45,6 +49,7 @@ const bot = createBotApp({
   mediaDownloader,
   demotivationFrameExtractor,
   birthdays,
+  kino,
   percentGame,
   dailySummary,
   court,
@@ -64,6 +69,11 @@ const stopBirthdayScheduler = birthdays.startScheduler({
     text,
     ...extra
   }),
+  runExclusive: (name, task) => schedulerLease.run(name, task)
+});
+
+const stopKinoScheduler = kino.startScheduler({
+  notify: (alert) => bot.notifyKinoAvailability(alert),
   runExclusive: (name, task) => schedulerLease.run(name, task)
 });
 
@@ -138,6 +148,7 @@ const shutdown = async (signal) => {
   clearInterval(courtScheduler);
   clearInterval(courtBankScheduler);
   stopBirthdayScheduler();
+  stopKinoScheduler();
   stopLagMonitor();
   await new Promise((resolve) => server.close(resolve));
   await Promise.race([

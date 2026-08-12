@@ -1,6 +1,6 @@
 # Очередь Telegram updates и worker
 
-Webhook больше не выполняет команды внутри HTTP-запроса. `src/webhook/ingress.js` выбирает `message` или `edited_message`, формирует запись по `update_id` и сохраняет её в PostgreSQL через `src/queue/postgres.js`. После успешного INSERT HTTP endpoint отвечает Telegram `200`.
+Webhook больше не выполняет команды внутри HTTP-запроса. `src/webhook/ingress.js` извлекает chat ID из `message`, `edited_message` или исходного сообщения `callback_query`, формирует запись по `update_id` и сохраняет её в PostgreSQL через `src/queue/postgres.js`. `poll_answer` использует служебный chat ID `0`. После успешного INSERT HTTP endpoint отвечает Telegram `200`.
 
 `update_id` — первичный ключ очереди. Повторная доставка того же update выполняет `ON CONFLICT DO NOTHING`, поэтому уже поставленная задача не дублируется.
 

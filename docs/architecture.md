@@ -11,6 +11,7 @@ Vercel handler ─┐
 Node HTTP server┘                                  │               │
                                                   │               ├─► Redis: кеш сообщений и `/percent`
                                                   │               ├─► Analytics/Birthday ─► PostgreSQL
+                                                  │               ├─► Kino Monitor ─► kino.kz + PostgreSQL
                                                   │               ├─► Media Service ─► yt-dlp + ffmpeg
                                                   │               └─► isolated `/q` child ─► Satori + Sharp
                                                   └─► retries, DLQ, per-chat leases
@@ -28,6 +29,7 @@ Node HTTP server┘                                  │               │
 | Bot App            | `src/bot/app.js`                         | Допуск чатов, команды, Telegram API, Redis timeline, стикерпаки |
 | Analytics Service  | `src/analytics/service.js`               | Пользовательские сценарии статистики и игр                      |
 | Birthday Service   | `src/birthday/service.js`                | Регистрация дат, календарь и фоновые уведомления                |
+| Kino Monitor       | `src/kino/*`                             | Каталоги, подписки, анализ карты зала и уведомления              |
 | Percent Game       | `src/games/percent.js`                   | Настраиваемые процентные ответы и суточная фиксация в Redis     |
 | Tokenizer          | `src/analytics/tokenize.js`              | Очистка, нормализация и подсчёт слов                            |
 | PostgreSQL adapter | `src/db/postgres.js`                     | Инициализация схемы и SQL-операции                              |
@@ -89,12 +91,18 @@ Media Service извлекает из text/caption до трёх уникаль�
 
 Команда `/birthday` сохраняет дату и профиль автора в PostgreSQL для конкретного чата. Worker запускает interval-проверку календаря через PostgreSQL `scheduler_leases`: только одна replica выполняет tick. После заданного локального часа сервис поздравляет сегодняшних именинников и рассылает напоминания. Delivery markers остаются вторым уровнем идемпотентности.
 
+## Поток мониторинга kino.kz
+
+`/kino` отправляет inline-клавиатуру с публичными каталогами фильмов и кинотеатров kino.kz. Callback query проходит через ту же durable queue и переключает PostgreSQL-подписку чата. Пустой список кинотеатров означает отсутствие фильтра.
+
+Worker раз в час под lease `kino-seat-monitor` загружает будущие сеансы выбранных фильмов и карту каждого подходящего зала. Сервис ищет последовательные свободные места в половине зала с более высокими номерами рядов. Перед Telegram API-вызовом `(chat_id, session_id)` атомарно фиксируется в `kino_notifications`. Текст оповещения передаётся общему механизму `/all`, поэтому к нему добавляются проверенные участники чата.
+
 ## Границы состояния
 
 - Web-процесс хранит только метрики; worker также хранит кеш emoji, rate-limit buckets и созданные сервисы.
 - PostgreSQL queue временно хранит полные pending/retry/dead updates. Payload completed-задачи очищается сразу.
 - Redis хранит сокращённые Telegram-сообщения 90 дней, timeline максимум из 10 000 записей и результаты `/percent` с настраиваемым TTL (по умолчанию 24 часа).
-- PostgreSQL хранит известные профили для `/all` и аналитики, агрегаты слов, игры, ежедневные выборы, дни рождения и markers отправленных уведомлений. Старые birthday markers очищаются через 400 дней.
+- PostgreSQL хранит известные профили для `/all` и аналитики, агрегаты слов, игры, ежедневные выборы, дни рождения, kino.kz-подписки и markers отправленных уведомлений. Старые birthday markers очищаются через 400 дней, kino markers — через 90 дней.
 - Telegram хранит исходные файлы и стикерпаки.
 - Временная директория ОС кратковременно хранит загружаемые видео; после каждого вызова она рекурсивно очищается.
 
@@ -103,6 +111,7 @@ Media Service извлекает из text/caption до трёх уникаль�
 ## Внешние зависимости
 
 - Telegram Bot API и Telegram File API;
+- kino.kz для каталогов, сеансов и карт зала;
 - Upstash Redis через REST;
 - PostgreSQL через `pg`;
 - jsDelivr для Apple emoji и резервного Twemoji;
@@ -112,7 +121,8 @@ Media Service извлекает из text/caption до трёх уникаль�
 
 ## Существенные ограничения текущей реализации
 
-- Автоматические тесты покрывают классификацию/enqueue, worker success/timeout/DLQ, rate limit, Redis circuit, Percent Game, media, даты и scheduler lease. `npm run lint` выполняет только синтаксическую проверку файлов.
+- Автоматические тесты покрывают классификацию/enqueue, worker success/timeout/DLQ, rate limit, Redis circuit, Percent Game, media, дни рождения и отбор мест kino.kz. `npm run lint` выполняет только синтаксическую проверку файлов.
+- Каталоги kino.kz публичны, но карта зала требует действующую cookie либо актуальный read-only endpoint; внутренние интерфейсы сайта могут измениться без обратной совместимости.
 - Telegram API, Telegram File API, OpenAI, PostgreSQL, Redis, emoji CDN, yt-dlp и ffmpeg ограничены таймаутами; Apple emoji и Twemoji остаются независимыми fallback.
 - Очередь даёт at-least-once: ошибка после частично успешного внешнего вызова может повторить этот побочный эффект.
 - Одновременные вызовы ежедневного выбора могут вернуть разным запросам разных кандидатов: вставка защищена `ON CONFLICT`, но проигравший запрос не перечитывает сохранённую строку.

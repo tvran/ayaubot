@@ -8,7 +8,7 @@ Handler:
 
 - любой метод кроме POST возвращает 200;
 - проверяет `x-telegram-bot-api-secret-token`, если задан `WEBHOOK_SECRET`;
-- принимает только `message`/`edited_message` с корректными `update_id` и chat ID;
+- принимает `message`, `edited_message`, `callback_query` с исходным сообщением и `poll_answer` с корректным `update_id` и доступным chat ID;
 - фиксирует update в `telegram_update_jobs`;
 - отвечает 200 после INSERT; duplicate `update_id` также считается успехом;
 - внутреннюю ошибку логирует и согласно контракту проекта всё равно отвечает 200.
@@ -26,11 +26,11 @@ Handler:
 
 ## `src/worker/index.js`: Railway worker-service
 
-Команда `npm run worker` создаёт Bot App и все его зависимости, запускает PostgreSQL queue worker, birthday scheduler и небольшой HTTP-сервер для `/health` и `/metrics`.
+Команда `npm run worker` создаёт Bot App и все его зависимости, запускает PostgreSQL queue worker, birthday scheduler, часовой kino.kz scheduler и небольшой HTTP-сервер для `/health` и `/metrics`.
 
 Worker обрабатывает разные чаты параллельно, но использует PostgreSQL chat lease для последовательности внутри одного чата. Тяжёлые задачи имеют отдельный лимит конкурентности. При `SIGTERM` worker прекращает polling, останавливает scheduler и ждёт активные задачи до 20 секунд.
 
-Birthday scheduler выполняет tick через `scheduler_leases`, поэтому несколько worker replicas не дублируют планировщик. Delivery markers остаются вторым уровнем идемпотентности.
+Birthday scheduler и kino.kz scheduler выполняют tick через `scheduler_leases`, поэтому несколько worker replicas не дублируют планировщики. Delivery markers остаются вторым уровнем идемпотентности.
 
 ## `scripts/set-webhook.js`: регистрация
 
@@ -42,7 +42,7 @@ Payload содержит:
 {
   "url": "https://example.com/api/telegram",
   "secret_token": "<WEBHOOK_SECRET>",
-  "allowed_updates": ["message", "edited_message"],
+  "allowed_updates": ["message", "edited_message", "callback_query", "poll_answer"],
   "max_connections": 10,
   "drop_pending_updates": false
 }
