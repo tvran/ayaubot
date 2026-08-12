@@ -4,6 +4,7 @@ const defaultIntervalMs = 60 * 60 * 1000;
 const defaultLookaheadDays = 7;
 const defaultPageSize = 8;
 const defaultManualMaxSessions = 30;
+const defaultMaxAlertsPerRun = 1;
 
 const positiveInteger = (value, fallback) => {
   const parsed = Number(value);
@@ -109,6 +110,10 @@ export const createTicketonCinemaMonitorService = ({
   const manualMaxSessions = Math.min(
     positiveInteger(env.TICKETON_MANUAL_MAX_SESSIONS, defaultManualMaxSessions),
     maxSessionsPerRun
+  );
+  const maxAlertsPerRun = Math.min(
+    positiveInteger(env.TICKETON_MAX_ALERTS_PER_RUN, defaultMaxAlertsPerRun),
+    10
   );
   const catalogTtlMs = Math.max(positiveInteger(env.TICKETON_CATALOG_TTL_MS, 5 * 60 * 1000), 30_000);
   const catalogCache = new Map();
@@ -290,6 +295,7 @@ export const createTicketonCinemaMonitorService = ({
     const firstDate = client.today();
     const lastDate = client.addDays(firstDate, lookaheadDays - 1);
 
+    chatLoop:
     for (const [targetChatId, watchedMovies] of moviesByChat) {
       const cinemaIds = new Set((cinemasByChat.get(targetChatId) || []).map((row) => String(row.cinema_id)));
       for (const watchedMovie of watchedMovies) {
@@ -314,6 +320,7 @@ export const createTicketonCinemaMonitorService = ({
         }
 
         for (const session of sessions) {
+          if (sent >= maxAlertsPerRun) break chatLoop;
           const sessionId = session.id;
           const cinema = session.cinema;
           const hall = session.hall;
@@ -384,7 +391,6 @@ export const createTicketonCinemaMonitorService = ({
             await notify(alert);
             sent += 1;
           } catch (error) {
-            await db.releaseTicketonNotification(notification);
             failures += 1;
             logger.error('Ticketon cinema notification failed', {
               chatId: targetChatId,
@@ -405,7 +411,8 @@ export const createTicketonCinemaMonitorService = ({
       sent,
       checkedSessions,
       failures,
-      limitReached
+      limitReached,
+      maxAlerts: maxAlertsPerRun
     };
   };
 
@@ -424,7 +431,7 @@ export const createTicketonCinemaMonitorService = ({
       `🎬 Фильмов в наблюдении: ${result.watchedMovies}`,
       `🪑 Сеансов проверено: ${result.checkedSessions}`,
       `✅ С хорошими местами: ${result.availableSessions}`,
-      `🔔 Новых уведомлений: ${result.sent}`
+      `🔔 Новых уведомлений: ${result.sent} из ${result.maxAlerts}`
     ];
     if (result.limitReached) {
       lines.push(`⚠️ Достигнут лимит ручной проверки: ${manualMaxSessions} сеансов.`);
