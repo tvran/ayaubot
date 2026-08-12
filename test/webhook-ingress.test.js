@@ -41,7 +41,7 @@ test('ignores unsupported Telegram update types without queue access', async () 
     queue: { enqueue() { throw new Error('must not be called'); } },
     logger: { log() {} }
   });
-  assert.deepEqual(await ingress.enqueue({ update_id: 1, callback_query: {} }), {
+  assert.deepEqual(await ingress.enqueue({ update_id: 1, inline_query: {} }), {
     accepted: false,
     ignored: true
   });

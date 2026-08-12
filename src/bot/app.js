@@ -64,6 +64,7 @@ const buildHelpText = (percentCommand = 'percent') => [
   '/qd — удаляю стикер из пака, если ответить на него',
   '/demotivation <текст> — делаю демотиватор из изображения в reply',
   '/all — зову всех известных мне участников чата, кроме ботов',
+  '/kino — выбираю фильмы и кинотеатры для ежечасного мониторинга мест',
   '',
   '/topwords — топ-5 слов за последние 14 дней, кто тут главный болтун',
   '/top — то же самое, но коротко, как твоя мотивация в понедельник',
@@ -121,6 +122,7 @@ export const createBotApp = ({
   mediaDownloader,
   demotivationFrameExtractor,
   birthdays,
+  kino,
   percentGame,
   dailySummary,
   court,
@@ -213,6 +215,7 @@ export const createBotApp = ({
     stickerSetOwnerConfigured: Boolean(stickerSetOwnerId),
     analyticsEnabled: Boolean(analytics),
     birthdaysEnabled: Boolean(birthdays?.enabled),
+    kinoMonitorEnabled: Boolean(kino?.monitoringEnabled),
     percentGameEnabled: Boolean(percentGame?.enabled),
     redisEnabled: Boolean(redis),
     mediaDownloadsEnabled: Boolean(mediaDownloader?.enabled)
@@ -305,21 +308,11 @@ export const createBotApp = ({
     }
   };
 
-  const handleAllCommand = async (message) => {
-    const chatId = message.chat.id;
-    if (!['group', 'supergroup'].includes(message.chat.type)) {
-      await sendMessage(chatId, '/all работает только в групповом чате.', message.message_id);
-      return;
-    }
-
+  const mentionChatMembers = async ({ chatId, header, replyToMessageId, emptyText }) => {
     const knownRows = await analytics?.knownUsers?.(chatId);
     if (!knownRows) {
-      await sendMessage(
-        chatId,
-        'Для /all нужен PostgreSQL: без него мне негде хранить список участников чата.',
-        message.message_id
-      );
-      return;
+      if (header) await sendMessage(chatId, header.trimEnd(), replyToMessageId);
+      return false;
     }
 
     const knownUsers = knownRows.map((row) => ({
@@ -338,21 +331,39 @@ export const createBotApp = ({
     });
     users.sort((left, right) => String(left.id).localeCompare(String(right.id), 'en', { numeric: true }));
 
-    const mentionMessages = buildMentionMessages(users);
+    const mentionMessages = buildMentionMessages(users, header ? { header } : undefined);
     if (!mentionMessages.length) {
+      await sendMessage(chatId, header?.trimEnd() || emptyText, replyToMessageId);
+      return false;
+    }
+
+    for (const [index, mention] of mentionMessages.entries()) {
+      await sendMessage(chatId, mention.text, index === 0 ? replyToMessageId : undefined, {
+        entities: mention.entities
+      });
+    }
+    return true;
+  };
+
+  const handleAllCommand = async (message) => {
+    const chatId = message.chat.id;
+    if (!['group', 'supergroup'].includes(message.chat.type)) {
+      await sendMessage(chatId, '/all работает только в групповом чате.', message.message_id);
+      return;
+    }
+    if (!analytics?.knownUsers) {
       await sendMessage(
         chatId,
-        'Не нашёл ни одного живого участника. Если я не админ, Telegram может не дать мне проверить состав чата.',
+        'Для /all нужен PostgreSQL: без него мне негде хранить список участников чата.',
         message.message_id
       );
       return;
     }
-
-    for (const [index, mention] of mentionMessages.entries()) {
-      await sendMessage(chatId, mention.text, index === 0 ? message.message_id : undefined, {
-        entities: mention.entities
-      });
-    }
+    await mentionChatMembers({
+      chatId,
+      replyToMessageId: message.message_id,
+      emptyText: 'Не нашёл ни одного живого участника. Если я не админ, Telegram может не дать мне проверить состав чата.'
+    });
   };
 
   const handleDemotivationCommand = async (message, command) => {
@@ -702,8 +713,55 @@ export const createBotApp = ({
     return false;
   };
 
+  const handleKinoCallback = async (callback) => {
+    const message = callback.message;
+    const chatId = message?.chat?.id;
+    if (!message || !chatAllowed(chatId) || !String(callback.data || '').startsWith('kino:')) return false;
+    if (!kino) {
+      await api('answerCallbackQuery', {
+        callback_query_id: callback.id,
+        text: 'Монитор кино не настроен.',
+        show_alert: true
+      });
+      return true;
+    }
+
+    try {
+      const menu = await kino.handleCallback({
+        chatId,
+        userId: callback.from?.id,
+        data: callback.data
+      });
+      try {
+        await api('editMessageText', {
+          chat_id: chatId,
+          message_id: message.message_id,
+          text: menu.text,
+          reply_markup: menu.reply_markup,
+          disable_web_page_preview: true
+        });
+      } catch (error) {
+        if (!/message is not modified/iu.test(error?.message || '')) throw error;
+      }
+      await api('answerCallbackQuery', { callback_query_id: callback.id });
+    } catch (error) {
+      logger.error('kino callback failed', {
+        chatId,
+        data: callback.data,
+        error: error?.message || String(error)
+      });
+      await api('answerCallbackQuery', {
+        callback_query_id: callback.id,
+        text: 'Не смог обновить афишу kino.kz. Попробуй ещё раз чуть позже.',
+        show_alert: true
+      }).catch(() => {});
+    }
+    return true;
+  };
+
   const handleUpdateInner = async (update) => {
     const callback = update.callback_query;
+    if (callback && await handleKinoCallback(callback)) return;
     if (update.poll_answer && court) {
       const result = await court.votePoll({ pollId: update.poll_answer.poll_id, voterId: update.poll_answer.user.id, optionIds: update.poll_answer.option_ids });
       if (result?.closed && result.session) {
@@ -816,6 +874,35 @@ export const createBotApp = ({
       return;
     }
 
+    if (command.name === 'kino') {
+      if (!['group', 'supergroup'].includes(message.chat.type)) {
+        await sendMessage(message.chat.id, '/kino работает только в групповом чате.', message.message_id);
+        return;
+      }
+      if (!kino) {
+        await sendMessage(message.chat.id, 'Монитор kino.kz пока не настроен.', message.message_id);
+        return;
+      }
+      try {
+        const menu = await kino.rootMenu(message.chat.id);
+        await sendMessage(message.chat.id, menu.text, message.message_id, {
+          reply_markup: menu.reply_markup,
+          disable_web_page_preview: true
+        });
+      } catch (error) {
+        logger.error('kino menu failed', {
+          chatId: message.chat.id,
+          error: error?.message || String(error)
+        });
+        await sendMessage(
+          message.chat.id,
+          'Не смог загрузить афишу kino.kz. Попробуй ещё раз чуть позже.',
+          message.message_id
+        );
+      }
+      return;
+    }
+
     if (await handleBirthdayCommand(message, command)) return;
     if (analytics && await handleAnalyticsCommand(message, command)) return;
   };
@@ -823,5 +910,10 @@ export const createBotApp = ({
   const handleUpdate = (update, executionContext = {}) =>
     context.run(executionContext, () => handleUpdateInner(update));
 
-  return { api, chatAllowed, handleUpdate };
+  const notifyKinoAvailability = (alert) => mentionChatMembers({
+    chatId: alert.chatId,
+    header: alert.text
+  });
+
+  return { api, chatAllowed, handleUpdate, notifyKinoAvailability };
 };
