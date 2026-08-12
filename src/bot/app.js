@@ -308,7 +308,7 @@ export const createBotApp = ({
     }
   };
 
-  const mentionChatMembers = async ({ chatId, header, replyToMessageId, emptyText, singleMessage = false }) => {
+  const mentionChatMembers = async ({ chatId, header, replyToMessageId, emptyText }) => {
     const knownRows = await analytics?.knownUsers?.(chatId);
     if (!knownRows) {
       if (header) await sendMessage(chatId, header.trimEnd(), replyToMessageId);
@@ -337,8 +337,7 @@ export const createBotApp = ({
       return false;
     }
 
-    const messagesToSend = singleMessage ? mentionMessages.slice(0, 1) : mentionMessages;
-    for (const [index, mention] of messagesToSend.entries()) {
+    for (const [index, mention] of mentionMessages.entries()) {
       await sendMessage(chatId, mention.text, index === 0 ? replyToMessageId : undefined, {
         entities: mention.entities
       });
@@ -346,11 +345,12 @@ export const createBotApp = ({
     return true;
   };
 
-  const notifyCinemaAvailability = (alert) => mentionChatMembers({
-    chatId: alert.chatId,
-    header: alert.text,
-    singleMessage: true
-  });
+  const notifyCinemaAvailability = (alert) => sendMessage(
+    alert.chatId,
+    alert.text,
+    undefined,
+    { disable_web_page_preview: true }
+  );
 
   const handleAllCommand = async (message) => {
     const chatId = message.chat.id;
