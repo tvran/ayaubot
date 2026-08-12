@@ -42,5 +42,11 @@ test('builds durable queue records for messages and inline keyboard callbacks', 
     lane: 'default',
     payload: callback
   });
+  const manualCheck = {
+    ...callback,
+    update_id: 125,
+    callback_query: { ...callback.callback_query, data: 'kino:check' }
+  };
+  assert.equal(updateQueueRecord(manualCheck).lane, 'heavy');
   assert.equal(updateQueueRecord({ update_id: 125, callback_query: {} }), null);
 });

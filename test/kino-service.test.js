@@ -94,7 +94,9 @@ test('Ticketon cinema monitor filters venues, finds adjacent seats and deduplica
   const second = await service.runDueChecks({ notify: async (alert) => alerts.push(alert) });
 
   assert.equal(first.sent, 1);
+  assert.equal(first.availableSessions, 1);
   assert.equal(second.sent, 0);
+  assert.equal(second.availableSessions, 1);
   assert.equal(alerts.length, 1);
   assert.match(alerts[0].text, /Ряд 2, места 7, 8/u);
   assert.equal(alerts[0].url, 'https://ticketon.kz/cinema/event/test-film/session/30');
@@ -128,4 +130,48 @@ test('Ticketon cinema menus mark watched items and explain empty cinema filter',
   assert.match(root.text, /все кинотеатры/u);
   assert.equal(movies.reply_markup.inline_keyboard[0][0].text, '✅ Тестовый фильм');
   assert.equal(movies.reply_markup.inline_keyboard[0][0].callback_data, 'kino:movie:10:0');
+  assert.equal(root.reply_markup.inline_keyboard[2][0].callback_data, 'kino:check');
+});
+
+test('manual Ticketon check is scoped to one chat and reports deduplicated results', async () => {
+  const db = createDb();
+  db.movies.push({ ...movie, chat_id: '-200', movie_id: '11', movie_name: 'Чужой фильм' });
+  const client = createClient();
+  const requestedMovies = [];
+  client.listMovies = async () => [
+    { id: 10, name: 'Тестовый фильм', slug: 'test-film' },
+    { id: 11, name: 'Чужой фильм', slug: 'other-film' }
+  ];
+  client.listSessions = async (movieId) => {
+    requestedMovies.push(String(movieId));
+    return createClient().listSessions();
+  };
+  const service = createTicketonCinemaMonitorService({
+    db,
+    client,
+    now: () => new Date('2026-08-12T05:00:00Z')
+  });
+  const alerts = [];
+
+  const first = await service.runManualCheck({ chatId: '-100', notify: async (alert) => alerts.push(alert) });
+  const second = await service.runManualCheck({ chatId: '-100', notify: async (alert) => alerts.push(alert) });
+
+  assert.deepEqual(requestedMovies, ['10', '10']);
+  assert.equal(first.watchedMovies, 1);
+  assert.equal(first.availableSessions, 1);
+  assert.equal(first.sent, 1);
+  assert.equal(second.availableSessions, 1);
+  assert.equal(second.sent, 0);
+  assert.equal(alerts.length, 1);
+  assert.match(first.text, /Сеансов проверено: 1/u);
+  assert.match(second.text, /Новых уведомлений: 0/u);
+});
+
+test('manual Ticketon check asks to select a movie when the chat watchlist is empty', async () => {
+  const service = createTicketonCinemaMonitorService({ db: createDb(), client: createClient() });
+
+  const result = await service.runManualCheck({ chatId: '-404', notify: async () => {} });
+
+  assert.equal(result.checkedSessions, 0);
+  assert.match(result.text, /Сначала выбери хотя бы один фильм/u);
 });

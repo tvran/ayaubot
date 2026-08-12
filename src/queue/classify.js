@@ -10,6 +10,7 @@ const commandName = (message = {}) => {
 export const updateMessage = (update = {}) => update.message || update.edited_message || null;
 
 export const classifyUpdateLane = (update = {}) => {
+  if (update.callback_query?.data === 'kino:check') return 'heavy';
   const message = updateMessage(update);
   if (!message) return 'default';
   if (heavyCommands.has(commandName(message))) return 'heavy';

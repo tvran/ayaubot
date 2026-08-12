@@ -345,6 +345,11 @@ export const createBotApp = ({
     return true;
   };
 
+  const notifyCinemaAvailability = (alert) => mentionChatMembers({
+    chatId: alert.chatId,
+    header: alert.text
+  });
+
   const handleAllCommand = async (message) => {
     const chatId = message.chat.id;
     if (!['group', 'supergroup'].includes(message.chat.type)) {
@@ -726,6 +731,33 @@ export const createBotApp = ({
       return true;
     }
 
+    if (callback.data === 'kino:check') {
+      await api('answerCallbackQuery', {
+        callback_query_id: callback.id,
+        text: 'Проверяю свободные места…'
+      }).catch((error) => {
+        logger.error('manual kino callback acknowledgement failed', {
+          chatId,
+          error: error?.message || String(error)
+        });
+      });
+      try {
+        const result = await kino.runManualCheck({ chatId, notify: notifyCinemaAvailability });
+        await sendMessage(chatId, result.text, message.message_id, { disable_web_page_preview: true });
+      } catch (error) {
+        logger.error('manual kino check failed', {
+          chatId,
+          error: error?.message || String(error)
+        });
+        await sendMessage(
+          chatId,
+          'Не смог проверить свободные места Ticketon. Попробуй ещё раз чуть позже.',
+          message.message_id
+        );
+      }
+      return true;
+    }
+
     try {
       const menu = await kino.handleCallback({
         chatId,
@@ -909,11 +941,6 @@ export const createBotApp = ({
 
   const handleUpdate = (update, executionContext = {}) =>
     context.run(executionContext, () => handleUpdateInner(update));
-
-  const notifyCinemaAvailability = (alert) => mentionChatMembers({
-    chatId: alert.chatId,
-    header: alert.text
-  });
 
   return { api, chatAllowed, handleUpdate, notifyCinemaAvailability };
 };

@@ -3,6 +3,7 @@ import { findAdjacentSeatBlock } from './seats.js';
 const defaultIntervalMs = 60 * 60 * 1000;
 const defaultLookaheadDays = 7;
 const defaultPageSize = 8;
+const defaultManualMaxSessions = 30;
 
 const positiveInteger = (value, fallback) => {
   const parsed = Number(value);
@@ -105,6 +106,10 @@ export const createTicketonCinemaMonitorService = ({
   const adjacentSeats = Math.min(positiveInteger(env.TICKETON_ADJACENT_SEATS, 2), 12);
   const pageSize = Math.min(positiveInteger(env.TICKETON_MENU_PAGE_SIZE, defaultPageSize), 20);
   const maxSessionsPerRun = positiveInteger(env.TICKETON_MAX_SESSIONS_PER_RUN, 300);
+  const manualMaxSessions = Math.min(
+    positiveInteger(env.TICKETON_MANUAL_MAX_SESSIONS, defaultManualMaxSessions),
+    maxSessionsPerRun
+  );
   const catalogTtlMs = Math.max(positiveInteger(env.TICKETON_CATALOG_TTL_MS, 5 * 60 * 1000), 30_000);
   const catalogCache = new Map();
 
@@ -170,6 +175,7 @@ export const createTicketonCinemaMonitorService = ({
         inline_keyboard: [
           [{ text: `🎬 Фильмы (${movies.length})`, callback_data: 'kino:movies:0' }],
           [{ text: `🏢 Кинотеатры (${cinemas.length || 'все'})`, callback_data: 'kino:cinemas:0' }],
+          [{ text: '🔎 Проверить сейчас', callback_data: 'kino:check' }],
           [{ text: '🔄 Обновить', callback_data: 'kino:root' }]
         ]
       }
@@ -253,29 +259,39 @@ export const createTicketonCinemaMonitorService = ({
     return listMenu(chatId, 'cinemas', parts[3]);
   };
 
-  const runDueChecks = async ({ notify } = {}) => {
-    if (!db) return { sent: 0, skipped: 'disabled' };
+  const runDueChecks = async ({ notify, chatId, maxSessions = maxSessionsPerRun } = {}) => {
+    if (!db) return { watchedMovies: 0, availableSessions: 0, sent: 0, checkedSessions: 0, failures: 0, skipped: 'disabled' };
     if (typeof notify !== 'function') throw new Error('Cinema monitor requires notify callback.');
 
-    const [movieRows, cinemaRows, currentMovies] = await Promise.all([
-      db.listTicketonMovieWatches(),
-      db.listTicketonCinemaWatches(),
-      movieCatalog()
+    const [movieRows, cinemaRows] = await Promise.all([
+      db.listTicketonMovieWatches(chatId),
+      db.listTicketonCinemaWatches(chatId)
     ]);
+    if (!movieRows.length) {
+      if (chatId === undefined) {
+        await db.deleteTicketonNotificationsBefore?.(client.addDays(client.today(), -90));
+      }
+      return { watchedMovies: 0, availableSessions: 0, sent: 0, checkedSessions: 0, failures: 0 };
+    }
+
+    const currentMovies = await movieCatalog();
     const moviesByChat = groupRowsByChat(movieRows);
     const cinemasByChat = groupRowsByChat(cinemaRows);
     const cinemaMovies = new Map(currentMovies.map((movie) => [movie.id, movie]));
     const sessionCache = new Map();
     const seatPlanCache = new Map();
+    const sessionLimit = positiveInteger(maxSessions, maxSessionsPerRun);
     let checkedSessions = 0;
+    let availableSessions = 0;
     let sent = 0;
     let failures = 0;
+    let limitReached = false;
     const instant = now();
     const firstDate = client.today();
     const lastDate = client.addDays(firstDate, lookaheadDays - 1);
 
-    for (const [chatId, watchedMovies] of moviesByChat) {
-      const cinemaIds = new Set((cinemasByChat.get(chatId) || []).map((row) => String(row.cinema_id)));
+    for (const [targetChatId, watchedMovies] of moviesByChat) {
+      const cinemaIds = new Set((cinemasByChat.get(targetChatId) || []).map((row) => String(row.cinema_id)));
       for (const watchedMovie of watchedMovies) {
         const movie = cinemaMovies.get(String(watchedMovie.movie_id));
         if (!movie) continue;
@@ -312,7 +328,10 @@ export const createTicketonCinemaMonitorService = ({
           const seatKey = String(sessionId);
           let planPromise = seatPlanCache.get(seatKey);
           if (!planPromise) {
-            if (checkedSessions >= maxSessionsPerRun) continue;
+            if (checkedSessions >= sessionLimit) {
+              limitReached = true;
+              continue;
+            }
             checkedSessions += 1;
             planPromise = client.getSeatPlan({ sessionId });
             seatPlanCache.set(seatKey, planPromise);
@@ -331,8 +350,9 @@ export const createTicketonCinemaMonitorService = ({
 
           const block = findBlock(plan, adjacentSeats);
           if (!block) continue;
+          availableSessions += 1;
           const notification = {
-            chatId,
+            chatId: targetChatId,
             sessionId,
             movieId: movie.id,
             cinemaId: cinema.id
@@ -342,7 +362,7 @@ export const createTicketonCinemaMonitorService = ({
 
           const url = client.eventUrl(movie, sessionId);
           const alert = {
-            chatId,
+            chatId: targetChatId,
             text: alertText({
               movie,
               cinema,
@@ -367,7 +387,7 @@ export const createTicketonCinemaMonitorService = ({
             await db.releaseTicketonNotification(notification);
             failures += 1;
             logger.error('Ticketon cinema notification failed', {
-              chatId,
+              chatId: targetChatId,
               sessionId: String(sessionId),
               error: error?.message || String(error)
             });
@@ -376,8 +396,41 @@ export const createTicketonCinemaMonitorService = ({
       }
     }
 
-    await db.deleteTicketonNotificationsBefore?.(client.addDays(client.today(), -90));
-    return { sent, checkedSessions, failures };
+    if (chatId === undefined) {
+      await db.deleteTicketonNotificationsBefore?.(client.addDays(client.today(), -90));
+    }
+    return {
+      watchedMovies: movieRows.length,
+      availableSessions,
+      sent,
+      checkedSessions,
+      failures,
+      limitReached
+    };
+  };
+
+  const runManualCheck = async ({ chatId, notify } = {}) => {
+    const result = await runDueChecks({ chatId, notify, maxSessions: manualMaxSessions });
+    if (!result.watchedMovies) {
+      return {
+        ...result,
+        text: 'Сначала выбери хотя бы один фильм через кнопку «Фильмы», а потом запускай проверку.'
+      };
+    }
+
+    const lines = [
+      '🔎 Ручная проверка завершена.',
+      '',
+      `🎬 Фильмов в наблюдении: ${result.watchedMovies}`,
+      `🪑 Сеансов проверено: ${result.checkedSessions}`,
+      `✅ С хорошими местами: ${result.availableSessions}`,
+      `🔔 Новых уведомлений: ${result.sent}`
+    ];
+    if (result.limitReached) {
+      lines.push(`⚠️ Достигнут лимит ручной проверки: ${manualMaxSessions} сеансов.`);
+    }
+    if (result.failures) lines.push(`⚠️ Ошибок Ticketon или Telegram: ${result.failures}`);
+    return { ...result, text: lines.join('\n') };
   };
 
   const startScheduler = ({ notify, runExclusive } = {}) => {
@@ -419,6 +472,7 @@ export const createTicketonCinemaMonitorService = ({
     listMenu,
     handleCallback,
     runDueChecks,
+    runManualCheck,
     startScheduler
   };
 };
