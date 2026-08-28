@@ -238,6 +238,27 @@ export const createPostgresDb = async (env = process.env) => {
       );
     },
 
+    async reserveAnecdoteGeneration(chatId, day, limit) {
+      const result = await query(
+        `
+        insert into anecdote_generations (chat_id, day, count)
+        values ($1, $2::date, 1)
+        on conflict (chat_id, day) do update set count = anecdote_generations.count + 1
+        where anecdote_generations.count < $3
+        returning count
+        `,
+        [chatId, day, limit]
+      );
+      return result.rows[0]?.count || null;
+    },
+
+    async releaseAnecdoteGeneration(chatId, day) {
+      await query(
+        'update anecdote_generations set count = greatest(0, count - 1) where chat_id = $1 and day = $2::date',
+        [chatId, day]
+      );
+    },
+
     async incrementWordCounts({ chatId, userId, date, counts }) {
       const entries = Array.from(counts.entries());
       if (!entries.length) return;

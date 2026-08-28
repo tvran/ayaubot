@@ -69,6 +69,7 @@ const buildHelpText = (percentCommand = 'percent') => [
   '/topwords — топ-5 слов за последние 14 дней, кто тут главный болтун',
   '/top — то же самое, но коротко, как твоя мотивация в понедельник',
   '/spam — кто больше всех написал сообщений за всё время',
+  '/anecdote — дедовский анекдот, пока дед не выдохся',
   '#итогидня — краткий AI-итог сообщений за сегодня',
   '/court — абсурдный суд: новый можно запустить, когда прошлый закрыт',
   '/court_next — закрыть этот суд и вытащить другой вопрос',
@@ -125,6 +126,7 @@ export const createBotApp = ({
   kino,
   percentGame,
   dailySummary,
+  anecdote,
   court,
   rateLimiter,
   metrics,
@@ -841,6 +843,11 @@ export const createBotApp = ({
       if (result?.replaced?.message_id) await api('stopPoll', { chat_id: result.replaced.chat_id, message_id: result.replaced.message_id });
       if (result?.error) await sendMessage(message.chat.id, result.error, message.message_id);
       if (result?.existing) await sendMessage(message.chat.id, 'Суд уже идёт. Дай ему закончиться или вызови /court_next.', message.message_id);
+      return;
+    }
+
+    if (command?.name === 'anecdote') {
+      await sendMessage(message.chat.id, await anecdote?.text(message.chat.id) || 'Анекдотам нужен PostgreSQL и OPENAI_API_KEY. Дед без базы не шутит.', message.message_id);
       return;
     }
 

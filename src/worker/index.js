@@ -1,4 +1,5 @@
 import { createAnalyticsService } from '../analytics/service.js';
+import { createAnecdoteService } from '../anecdote/service.js';
 import { createBirthdayService } from '../birthday/service.js';
 import { createBotApp } from '../bot/app.js';
 import { createRateLimiter } from '../bot/rate-limit.js';
@@ -32,6 +33,7 @@ const stopLagMonitor = startEventLoopLagMonitor({ metrics });
 const redis = createRedisClient();
 const redisGateway = createRedisCircuit({ redis, metrics });
 const analytics = createAnalyticsService({ db });
+const anecdote = createAnecdoteService({ db });
 const birthdays = createBirthdayService({ db });
 const kinoClient = createTicketonClient();
 const kino = createTicketonCinemaMonitorService({ db, client: kinoClient });
@@ -46,6 +48,7 @@ const bot = createBotApp({
   redis,
   redisGateway,
   analytics,
+  anecdote,
   mediaDownloader,
   demotivationFrameExtractor,
   birthdays,
