@@ -10,7 +10,6 @@ const fallbackQuestions = [
   'Кому вручить ключи от подвала, которого у нас нет?',
   'Кто вообще-то гусь, но тщательно это скрывает?'
 ];
-const bankRefreshMs = 14 * 24 * 60 * 60 * 1000;
 const closeAfterMs = 15 * 60 * 1000;
 const votesToClose = 6;
 
@@ -41,13 +40,13 @@ export const createCourtService = ({ db, env = process.env, fetchImpl = fetch, n
   const apiKey = env.OPENAI_API_KEY;
 
   const loadBank = async () => {
-    const current = await pool.query('select questions, updated_at from court_question_banks where id = true');
+    const current = await pool.query('select questions from court_question_banks where id = true');
     const row = current.rows[0];
-    if (row && now() - new Date(row.updated_at) < bankRefreshMs) return row.questions;
+    if (row) return row.questions;
     if (!apiKey) return row?.questions || fallbackQuestions;
     const response = await fetchWithTimeout(fetchImpl, 'https://api.openai.com/v1/responses', {
       method: 'POST', headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'gpt-5.4-mini', input: 'Придумай 30 коротких абсурдных вопросов для голосования в русском дружеском чате. Без офисной и тех-бро тем, без оскорблений. Верни только JSON-массив строк.', text: { format: { type: 'json_schema', name: 'court_questions', strict: true, schema: { type: 'object', additionalProperties: false, required: ['questions'], properties: { questions: { type: 'array', minItems: 20, maxItems: 40, items: { type: 'string' } } } } } } })
+      body: JSON.stringify({ model: 'gpt-5.4-mini', input: 'Придумай 30 вопросов для голосования в русском дружеском чате. Каждый — короткий, но понятный абсурдный сюжет на 1–2 предложения: ситуация и затем вопрос, кто из чата в ней отличится. Никаких внутренних мемов, имён, офиса, тех-бро, детсада, милоты, канцелярита и оскорблений. Нужен живой взрослый сюр: нелепые правила города, аэропорты, лифты, странные квесты, говорящие животные, бытовая катастрофа. Верни только JSON-массив строк.', text: { format: { type: 'json_schema', name: 'court_questions', strict: true, schema: { type: 'object', additionalProperties: false, required: ['questions'], properties: { questions: { type: 'array', minItems: 20, maxItems: 40, items: { type: 'string' } } } } } } })
     }, { timeoutMs: 30_000, label: 'OpenAI court question bank' });
     const data = await response.json();
     const output = data.output_text || data.output?.flatMap((item) => item.content || []).find((item) => item.type === 'output_text')?.text;
