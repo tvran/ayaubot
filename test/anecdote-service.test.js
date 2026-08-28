@@ -22,7 +22,8 @@ test('generates an anecdote and reserves a daily slot', async () => {
   assert.deepEqual(reservations, [[-1, '2026-08-28', 10]]);
   assert.equal(request.url, 'https://api.x.ai/v1/responses');
   assert.equal(request.body.model, 'grok-4.3');
-  assert.match(request.body.input, /старпёрский советский юмор/);
+  assert.match(request.body.instructions, /старпёрский советский юмор/);
+  assert.match(request.body.input, /Сгенерируй один новый анекдот/);
 });
 
 test('stops after ten anecdotes', async () => {

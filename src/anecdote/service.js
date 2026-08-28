@@ -87,7 +87,8 @@ export const createAnecdoteService = ({
           },
           body: JSON.stringify({
             model,
-            input: SYSTEM_PROMPT,
+            instructions: SYSTEM_PROMPT,
+            input: 'Сгенерируй один новый анекдот прямо сейчас. Ответь только текстом анекдота — без приветствий, пояснений, вопросов и фразы «готов».',
             text: { format: { type: 'text' } },
           }),
         },
