@@ -2,6 +2,7 @@ import { fetchWithTimeout } from '../runtime/fetch.js';
 
 const timeZone = 'Asia/Almaty';
 const summaryModel = 'gpt-5.4-mini';
+const grokModel = 'grok-4.3';
 const summaryFormatVersion = 3;
 
 const dateFormatter = new Intl.DateTimeFormat('en-CA', {
@@ -98,12 +99,15 @@ const outputTextFor = (response) => response.output_text || response.output
   ?.text;
 
 export const createDailySummaryService = ({ db, env = process.env, fetchImpl = fetch } = {}) => {
-  const apiKey = env.OPENAI_API_KEY;
+  const xai = Boolean(env.XAI_API_KEY);
+  const apiKey = env.XAI_API_KEY || env.OPENAI_API_KEY;
+  const apiUrl = xai ? 'https://api.x.ai/v1/responses' : 'https://api.openai.com/v1/responses';
+  const model = xai ? env.XAI_MODEL || grokModel : summaryModel;
   const timeoutMs = Math.max(1_000, Number(env.OPENAI_TIMEOUT_MS) || 45_000);
 
   const summaryText = async (chatId, day = dayString(), { signal } = {}) => {
     if (!db) return 'Итоги дня требуют PostgreSQL. База пока не подключена.';
-    if (!apiKey) return 'Итоги дня пока не настроены: добавь OPENAI_API_KEY в переменные хостинга.';
+    if (!apiKey) return 'Итоги дня пока не настроены: добавь XAI_API_KEY в переменные хостинга.';
 
     const saved = await db.dailySummary(chatId, day, summaryFormatVersion);
     if (saved) return saved;
@@ -114,7 +118,7 @@ export const createDailySummaryService = ({ db, env = process.env, fetchImpl = f
 
     const response = await fetchWithTimeout(
       fetchImpl,
-      'https://api.openai.com/v1/responses',
+      apiUrl,
       {
         method: 'POST',
         headers: {
@@ -122,7 +126,7 @@ export const createDailySummaryService = ({ db, env = process.env, fetchImpl = f
           'content-type': 'application/json'
         },
         body: JSON.stringify({
-          model: summaryModel,
+          model,
           input: [
             {
               role: 'system',

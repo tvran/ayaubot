@@ -4,6 +4,7 @@ import { createDailySummaryService } from '../src/summary/service.js';
 
 test('reads JSON output from the Responses API output content', async () => {
   let saved;
+  let request;
   const service = createDailySummaryService({
     db: {
       async dailySummary() { return null; },
@@ -19,8 +20,10 @@ test('reads JSON output from the Responses API output content', async () => {
       },
       async saveDailySummary(chatId, day, text) { saved = { chatId, day, text }; }
     },
-    env: { OPENAI_API_KEY: 'test-key' },
-    fetchImpl: async () => new Response(JSON.stringify({
+    env: { XAI_API_KEY: 'test-key' },
+    fetchImpl: async (url, options) => {
+      request = { url, body: JSON.parse(options.body) };
+      return new Response(JSON.stringify({
       output: [{
         type: 'message',
         content: [{
@@ -33,7 +36,8 @@ test('reads JSON output from the Responses API output content', async () => {
           })
         }]
       }]
-    }), { status: 200 })
+      }), { status: 200 });
+    }
   });
 
   const text = await service.summaryText(-100123, '2026-08-06');
@@ -43,4 +47,6 @@ test('reads JSON output from the Responses API output content', async () => {
   assert.doesNotMatch(text, /t\.me\/c/);
   assert.doesNotMatch(text, /Ссылки из чата/);
   assert.equal(saved.chatId, -100123);
+  assert.equal(request.url, 'https://api.x.ai/v1/responses');
+  assert.equal(request.body.model, 'grok-4.3');
 });

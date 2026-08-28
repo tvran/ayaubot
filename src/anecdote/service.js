@@ -1,7 +1,8 @@
 import { fetchWithTimeout } from '../runtime/fetch.js';
 
 const timeZone = 'Asia/Almaty';
-const model = 'gpt-5.4-mini';
+const openaiModel = 'gpt-5.4-mini';
+const grokModel = 'grok-4.3';
 const dailyLimit = 10;
 
 const formatter = new Intl.DateTimeFormat('en-CA', {
@@ -17,7 +18,10 @@ const outputTextFor = (response) => response.output_text || response.output
   ?.text;
 
 export const createAnecdoteService = ({ db, env = process.env, fetchImpl = fetch, now = () => new Date() } = {}) => {
-  const apiKey = env.OPENAI_API_KEY;
+  const xai = Boolean(env.XAI_API_KEY);
+  const apiKey = env.XAI_API_KEY || env.OPENAI_API_KEY;
+  const apiUrl = xai ? 'https://api.x.ai/v1/responses' : 'https://api.openai.com/v1/responses';
+  const model = xai ? env.XAI_MODEL || grokModel : openaiModel;
   const timeoutMs = Math.max(1_000, Number(env.OPENAI_TIMEOUT_MS) || 45_000);
 
   const text = async (chatId, { signal } = {}) => {
@@ -27,7 +31,7 @@ export const createAnecdoteService = ({ db, env = process.env, fetchImpl = fetch
     if (!number) return 'Всё, дед заебался придумывать анекдоты на сегодня. Давай завтра.';
 
     try {
-      const response = await fetchWithTimeout(fetchImpl, 'https://api.openai.com/v1/responses', {
+      const response = await fetchWithTimeout(fetchImpl, apiUrl, {
         method: 'POST',
         headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
         body: JSON.stringify({
