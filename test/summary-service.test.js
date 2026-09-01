@@ -49,4 +49,5 @@ test('reads JSON output from the Responses API output content', async () => {
   assert.equal(saved.chatId, -100123);
   assert.equal(request.url, 'https://api.x.ai/v1/responses');
   assert.equal(request.body.model, 'grok-4.3');
+  assert.match(request.body.input[0].content, /4–6 содержательных пунктов/);
 });
