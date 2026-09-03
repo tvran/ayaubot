@@ -51,5 +51,6 @@ test('reads JSON output from the Responses API output content', async () => {
   assert.equal(request.body.model, 'grok-4.3');
   assert.match(request.body.input[0].content, /4–6 содержательных пунктов/);
   assert.match(request.body.input[0].content, /Мат разрешён/);
+  assert.match(request.body.input[0].content, /строго одним форматом/);
   assert.match(request.body.input[1].content, /Саня \(@sanya\), он/);
 });
