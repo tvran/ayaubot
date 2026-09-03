@@ -16,7 +16,7 @@ test('reads JSON output from the Responses API output content', async () => {
         }));
       },
       async usersForChat() {
-        return [{ user_id: 42, first_name: 'Саня', username: 'sanya' }];
+        return [{ user_id: 42, first_name: 'Саня', username: 'sanya', gender: 'он' }];
       },
       async saveDailySummary(chatId, day, text) { saved = { chatId, day, text }; }
     },
@@ -50,4 +50,6 @@ test('reads JSON output from the Responses API output content', async () => {
   assert.equal(request.url, 'https://api.x.ai/v1/responses');
   assert.equal(request.body.model, 'grok-4.3');
   assert.match(request.body.input[0].content, /4–6 содержательных пунктов/);
+  assert.match(request.body.input[0].content, /Мат разрешён/);
+  assert.match(request.body.input[1].content, /Саня \(@sanya\), он/);
 });

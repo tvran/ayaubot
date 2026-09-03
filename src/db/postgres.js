@@ -5,6 +5,7 @@ create table if not exists users (
   first_name text,
   last_name text,
   username text,
+  gender text check (gender in ('он', 'она')),
   updated_at timestamptz not null default now(),
   primary key (chat_id, user_id)
 );
@@ -206,7 +207,7 @@ export const createPostgresDb = async (env = process.env) => {
     async usersForChat(chatId) {
       const result = await query(
         `
-        select user_id, first_name, last_name, username
+        select user_id, first_name, last_name, username, gender
         from users
         where chat_id = $1
         order by updated_at desc, user_id
