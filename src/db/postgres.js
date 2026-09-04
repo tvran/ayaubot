@@ -204,6 +204,20 @@ export const createPostgresDb = async (env = process.env) => {
       return result.rows;
     },
 
+    async messagesForLast24Hours(chatId) {
+      const result = await query(
+        `
+        select message_id, user_id, text
+        from chat_messages
+        where chat_id = $1
+          and sent_at >= now() - interval '24 hours'
+        order by message_id
+        `,
+        [chatId]
+      );
+      return result.rows;
+    },
+
     async usersForChat(chatId) {
       const result = await query(
         `

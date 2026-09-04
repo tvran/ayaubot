@@ -70,8 +70,8 @@ const formatSection = (title, items, format) => items.length ? [
   ''
 ] : [];
 
-const renderSummary = (day, summary) => [
-  `итоги дня · ${labelFormatter.format(new Date(`${day}T12:00:00Z`))}`,
+const renderSummary = (label, summary) => [
+  `итоги дня · ${label}`,
   summary.headline,
   '',
   ...formatSection('что было', summary.topics, (item) => `• ${item.text}`),
@@ -118,15 +118,22 @@ export const createDailySummaryService = ({ db, env = process.env, fetchImpl = f
   const model = xai ? env.XAI_MODEL || grokModel : summaryModel;
   const timeoutMs = Math.max(1_000, Number(env.OPENAI_TIMEOUT_MS) || 45_000);
 
-  const summaryText = async (chatId, day = dayString(), { signal } = {}) => {
+  const summaryText = async (chatId, day, { signal } = {}) => {
     if (!db) return 'Итоги дня требуют PostgreSQL. База пока не подключена.';
     if (!apiKey) return 'Итоги дня пока не настроены: добавь XAI_API_KEY в переменные хостинга.';
 
-    const saved = await db.dailySummary(chatId, day, summaryFormatVersion);
-    if (saved) return saved;
+    const rolling = !day;
+    if (!rolling) {
+      const saved = await db.dailySummary(chatId, day, summaryFormatVersion);
+      if (saved) return saved;
+    }
 
-    const messages = await db.messagesForDay(chatId, day);
-    if (messages.length < 5) return 'За этот день пока слишком мало сообщений для нормального итога. Дайте чату немного пожить.';
+    const messages = rolling
+      ? await db.messagesForLast24Hours(chatId)
+      : await db.messagesForDay(chatId, day);
+    if (messages.length < 5) return rolling
+      ? 'За последние 24 часа пока слишком мало сообщений для нормального итога. Дайте чату немного пожить.'
+      : 'За этот день пока слишком мало сообщений для нормального итога. Дайте чату немного пожить.';
     const users = await db.usersForChat(chatId);
 
     const response = await fetchWithTimeout(
@@ -147,7 +154,9 @@ export const createDailySummaryService = ({ db, env = process.env, fetchImpl = f
             },
             {
               role: 'user',
-              content: `Составь итог дня ${day}. Сообщения:\n\n${inputForMessages(messages, users)}`
+              content: rolling
+                ? `Составь итог последних 24 часов. Сообщения:\n\n${inputForMessages(messages, users)}`
+                : `Составь итог дня ${day}. Сообщения:\n\n${inputForMessages(messages, users)}`
             }
           ],
           text: {
@@ -169,8 +178,9 @@ export const createDailySummaryService = ({ db, env = process.env, fetchImpl = f
     if (!outputText) throw new Error('OpenAI returned an empty daily summary');
 
     const summary = JSON.parse(outputText);
-    const text = renderSummary(day, summary);
-    await db.saveDailySummary(chatId, day, text, summaryFormatVersion);
+    const label = rolling ? 'последние 24 часа' : labelFormatter.format(new Date(`${day}T12:00:00Z`));
+    const text = renderSummary(label, summary);
+    if (!rolling) await db.saveDailySummary(chatId, day, text, summaryFormatVersion);
     return text;
   };
 

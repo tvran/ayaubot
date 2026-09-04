@@ -54,3 +54,29 @@ test('reads JSON output from the Responses API output content', async () => {
   assert.match(request.body.input[0].content, /строго одним форматом/);
   assert.match(request.body.input[1].content, /Саня \(@sanya\), он/);
 });
+
+test('uses the last 24 hours without a daily cache by default', async () => {
+  let request;
+  const service = createDailySummaryService({
+    db: {
+      async dailySummary() { assert.fail('rolling summaries must not read the daily cache'); },
+      async messagesForLast24Hours() {
+        return Array.from({ length: 5 }, (_, index) => ({ message_id: index + 1, user_id: 42, text: `Сообщение ${index + 1}` }));
+      },
+      async usersForChat() { return [{ user_id: 42, first_name: 'Саня', username: 'sanya', gender: 'он' }]; },
+      async saveDailySummary() { assert.fail('rolling summaries must not write the daily cache'); }
+    },
+    env: { XAI_API_KEY: 'test-key' },
+    fetchImpl: async (_url, options) => {
+      request = JSON.parse(options.body);
+      return new Response(JSON.stringify({
+        output: [{ content: [{ type: 'output_text', text: JSON.stringify({ headline: 'Живой чат', topics: [], decisions: [], recommendations: [] }) }] }]
+      }), { status: 200 });
+    }
+  });
+
+  const text = await service.summaryText(-100123);
+
+  assert.match(text, /последние 24 часа/);
+  assert.match(request.input[1].content, /итог последних 24 часов/);
+});
