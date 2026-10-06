@@ -61,8 +61,9 @@ Npm scripts:
 | `TELEGRAM_API_RETRIES` | Необязательна | Повторы Telegram 429/5xx, по умолчанию 2 |
 | `EMOJI_CDN_TIMEOUT_MS` | Необязательна | Таймаут каждого emoji CDN fallback, по умолчанию 5000 ms |
 | `REDIS_TIMEOUT_MS`, `REDIS_RETRIES`, `REDIS_CIRCUIT_OPEN_MS` | Необязательны | Redis timeout/retries/circuit: 1000 ms, 0, 30000 ms |
-| `STICKER_SET_NAME` | Для `/qs` | Техническое имя Telegram sticker set, обычно оканчивается на `_by_<bot_username>` |
+| `STICKER_SET_NAME` | Для `/qs` | Базовое имя Telegram sticker set с окончанием `_by_<bot_username>`; заполненный набор продолжится в нумерованных наборах |
 | `STICKER_SET_TITLE` | Необязательна | Видимый заголовок набора, по умолчанию `Group Quotes` |
+| `STICKER_SET_OWNER_ID` | Рекомендуется для `/qs` | Telegram ID владельца групповых наборов; без него используется автор команды |
 | `PORT` | Только Node server | HTTP-порт, по умолчанию `3000` |
 | `APP_URL` | Для `set-webhook` | Публичный URL приложения; используется после Vercel-переменной |
 | `VERCEL_PROJECT_PRODUCTION_URL` | Автоматически на Vercel | Production hostname, имеет приоритет над `APP_URL` |
@@ -94,11 +95,15 @@ Npm scripts:
 | `QUEUE_POLL_MS`, `QUEUE_LOCK_MS`, `QUEUE_MAX_ATTEMPTS` | Необязательны | Poll, lease и попытки: 1000 ms, 60000 ms, 5 |
 | `QUEUE_RETRY_BASE_MS`, `QUEUE_RETRY_MAX_MS` | Необязательны | Границы exponential backoff: 1000/60000 ms |
 | `QUEUE_ALERT_DEPTH`, `QUEUE_ALERT_AGE_SECONDS` | Необязательны | Warning при 50 задачах или возрасте 60 секунд |
-| `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_COMMANDS`, `RATE_LIMIT_HEAVY` | Необязательны | Окно 60 секунд, лимиты 10/2 |
+| `RATE_LIMIT_BURST_WINDOW_MS` | Необязательна | Скользящее окно отправки запросов, по умолчанию 5000 ms |
+| `RATE_LIMIT_BURST_REQUESTS` | Необязательна | Порог включения паузы, по умолчанию 10 запросов одного человека в одном чате; десятый отклоняется |
+| `RATE_LIMIT_COOLDOWN_MS` | Необязательна | Пауза после достижения порога, по умолчанию 60000 ms; отклонённые запросы её не продлевают |
 | `METRICS_TOKEN` | Рекомендуется | Bearer token для `/metrics`; без него endpoint открыт |
 | `OPENAI_TIMEOUT_MS` | Необязательна | Таймаут `#итогидня`, по умолчанию 45 секунд |
 
 Файл `.env.example` содержит основной минимум, PostgreSQL, media-сервис, планировщик дней рождения и монитор кино Ticketon, но не перечисляет `APP_URL`, `WEBHOOK_PATH`, `PORT` и множественный `ALLOWED_CHAT_IDS`.
+
+Старые `RATE_LIMIT_WINDOW_MS`, `RATE_LIMIT_COMMANDS` и `RATE_LIMIT_HEAVY` больше не используются: оставшийся в окружении лимит heavy=2 не влияет на новую политику. Лимитер хранится в памяти worker-процесса; для общего лимита при нескольких worker replicas потребуется общее хранилище.
 
 ## Установка yt-dlp и ffmpeg
 

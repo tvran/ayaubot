@@ -13,6 +13,7 @@ AyauBot — Telegram-бот для групповых чатов. Он прев�
 | [Входные точки](components/entrypoints.md) | Vercel handler, Node.js HTTP-сервер и скрипт регистрации webhook |
 | [Webhook queue](components/webhook-queue.md) | Идемпотентность, lanes, retries, dead-letter и worker concurrency |
 | [Приложение бота](components/bot-app.md) | Разбор команд, Telegram Bot API, кеш сообщений и стикерпаки |
+| [План доработки стикеров](sticker-saving-plan.md) | Исправления по Railway-логам: заполнение наборов и ограничение серии запросов |
 | [Аналитика и игры](components/analytics.md) | Токенизация, статистика, кодовое слово и ежедневный выбор |
 | [Игра Percent](components/percent-game.md) | Настраиваемые параметры, шаблоны ответов и суточный Redis-кеш |
 | [Дни рождения](components/birthdays.md) | Регистрация дат, личные напоминания и ежедневный планировщик |
@@ -93,7 +94,7 @@ src/birthday/service.js      дни рождения и фоновые напо�
 src/kino/                    каталоги Ticketon, меню, карты мест и scheduler
 src/demotivation/frame.js    извлечение первого кадра видеокружка через ffmpeg
 src/demotivation/service.js  проверка reply и текста демотиватора
-src/sticker/service.js       выбор фотографии для `/qs`
+src/sticker/service.js       выбор фотографии и сохранение `/qs` в нумерованные наборы
 src/db/postgres.js           схема и запросы PostgreSQL
 src/games/percent.js         настраиваемая процентная игра
 src/media/service.js         загрузка Reels/TikTok через yt-dlp
@@ -111,7 +112,7 @@ test/birthday-service.test.js тесты дат и планировщика дн
 test/demotivation-frame.test.js тесты ffmpeg-контракта первого кадра
 test/demotivation.test.js    тесты текста и выбора reply-изображения
 test/isolated-quote.test.js  тесты process isolation, timeout и cancellation `/q`
-test/sticker-service.test.js тесты выбора reply-фотографии для `/qs`
+test/sticker-service.test.js тесты reply-фотографии, заполнения и создания наборов
 test/mentions.test.js        тесты отбора участников и Telegram entities
 vercel.json                  лимит выполнения Vercel Function
 ```

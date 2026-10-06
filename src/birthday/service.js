@@ -98,7 +98,10 @@ export const parseBirthdayDate = (value, { currentYear = new Date().getUTCFullYe
   const day = Number(match[1]);
   const month = Number(match[2]);
   const year = match[3] ? Number(match[3]) : null;
-  const validationYear = year || 2000;
+  if (year !== null && (year < 1900 || year > currentYear)) {
+    throw new Error(`Год должен быть от 1900 до ${currentYear}. Если не хочешь его указывать, напиши только ДД.ММ.`);
+  }
+  const validationYear = year ?? 2000;
   const date = new Date(Date.UTC(validationYear, month - 1, day));
   const validDate = date.getUTCFullYear() === validationYear &&
     date.getUTCMonth() === month - 1 &&
@@ -107,10 +110,6 @@ export const parseBirthdayDate = (value, { currentYear = new Date().getUTCFullYe
   if (!validDate || month < 1 || month > 12 || day < 1) {
     throw new Error('Такой даты в календаре нет. Попробуй ещё раз в формате ДД.ММ.ГГГГ.');
   }
-  if (year && (year < 1900 || year > currentYear)) {
-    throw new Error(`Год должен быть от 1900 до ${currentYear}. Если не хочешь его указывать, напиши только ДД.ММ.`);
-  }
-
   return { day, month, year };
 };
 

@@ -7,7 +7,12 @@ import {
   normalizeDemotivationText,
   replyDemotivationSource
 } from '../demotivation/service.js';
-import { replyPhotoFileId, staticStickerInput } from '../sticker/service.js';
+import {
+  createStickerService,
+  isRetryableStickerError,
+  replyPhotoFileId,
+  stickerSaveErrorText
+} from '../sticker/service.js';
 import { classifyUpdateLane } from '../queue/classify.js';
 import { fetchWithTimeout, waitWithSignal } from '../runtime/fetch.js';
 import { buildMentionMessages, findMentionableUsers } from './mentions.js';
@@ -495,8 +500,7 @@ export const createBotApp = ({
     }
   };
 
-  const isMissingStickerSetError = (error) =>
-    /sticker set not found|stickerset_invalid|stickers? set .* not found/i.test(error?.message || '');
+  const stickerService = createStickerService({ api, setName: stickerSetName, setTitle: stickerSetTitle });
 
   const stickerSetConfigured = async (chatId, commandMessage) => {
     if (!stickerSetName) {
@@ -513,45 +517,39 @@ export const createBotApp = ({
     form.append('sticker', new Blob([sticker], { type: 'image/webp' }), 'sticker.webp');
     const uploaded = await api('uploadStickerFile', form, { formData: true });
     if (!uploaded?.file_id) throw new Error('uploadStickerFile returned no file_id');
-    return uploaded.file_id;
+    return uploaded;
   };
 
-  const saveStickerReference = async (chatId, fromUserId, commandMessage, stickerFileId) => {
+  const saveStickerReference = async (chatId, fromUserId, commandMessage, stickerFileId, fileUniqueId) => {
     if (!await stickerSetConfigured(chatId, commandMessage)) return;
 
     const ownerUserId = stickerSetOwnerId || fromUserId;
-    const sticker = staticStickerInput(stickerFileId);
-
+    let saved;
     try {
-      await api('addStickerToSet', {
-        user_id: ownerUserId,
-        name: stickerSetName,
-        sticker
+      saved = await stickerService.save({
+        ownerUserId,
+        fileId: stickerFileId,
+        fileUniqueId
       });
     } catch (error) {
-      logger.error('addStickerToSet failed', {
+      logger.error('sticker save failed', {
         stickerSetName,
         ownerUserId: String(ownerUserId),
         commandUserId: String(fromUserId),
         error: error.message
       });
+      metrics?.increment('sticker_saves_total', { result: 'error' });
 
-      if (!isMissingStickerSetError(error)) {
-        await sendMessage(chatId, 'Не смог добавить в стикерпак. В логах теперь есть настоящая причина, без этой маскировочной хуйни.', commandMessage.message_id);
-        return;
-      }
-
-      await api('createNewStickerSet', {
-        user_id: ownerUserId,
-        name: stickerSetName,
-        title: stickerSetTitle,
-        stickers: [sticker]
-      });
+      if (isRetryableStickerError(error)) throw error;
+      await sendMessage(chatId, stickerSaveErrorText(error), commandMessage.message_id);
+      return;
     }
 
+    metrics?.increment('sticker_saves_total', { result: saved.alreadySaved ? 'already_saved' : 'saved' });
+    logger.log('sticker saved', { stickerSetName: saved.name, alreadySaved: saved.alreadySaved });
     await sendMessage(
       chatId,
-      `Готово, закинул в ваш [стикерпак группы](https://t.me/addstickers/${stickerSetName})✨ Красиво, аж неловко.`,
+      `${saved.alreadySaved ? 'Этот стикер уже сохранён.' : 'Готово, сохранил стикер!'} [Стикерпак группы](https://t.me/addstickers/${saved.name})✨`,
       commandMessage.message_id,
       { parse_mode: 'Markdown', disable_web_page_preview: true }
     );
@@ -561,24 +559,25 @@ export const createBotApp = ({
     if (!await stickerSetConfigured(chatId, commandMessage)) return;
 
     const ownerUserId = stickerSetOwnerId || fromUserId;
-    let stickerFileId;
+    let uploaded;
     try {
-      stickerFileId = await uploadStickerBuffer(ownerUserId, sticker);
+      uploaded = await uploadStickerBuffer(ownerUserId, sticker);
     } catch (error) {
       logger.error('uploadStickerFile failed', {
         ownerUserId: String(ownerUserId),
         commandUserId: String(fromUserId),
         error: error.message
       });
+      if (isRetryableStickerError(error)) throw error;
       await sendMessage(
         chatId,
-        'Не смог подготовить фотографию для стикерпака. В логах сохранил причину.',
+        'Telegram не принял фотографию для стикерпака. Попробуй другое фото.',
         commandMessage.message_id
       );
       return;
     }
 
-    await saveStickerReference(chatId, fromUserId, commandMessage, stickerFileId);
+    await saveStickerReference(chatId, fromUserId, commandMessage, uploaded.file_id, uploaded.file_unique_id);
   };
 
   const saveQuotedSticker = async (chatId, fromUserId, commandMessage) => {
@@ -612,7 +611,7 @@ export const createBotApp = ({
       return;
     }
 
-    await saveStickerReference(chatId, fromUserId, commandMessage, sticker.file_id);
+    await saveStickerReference(chatId, fromUserId, commandMessage, sticker.file_id, sticker.file_unique_id);
   };
 
   const deleteSticker = async (chatId, commandMessage) => {
@@ -795,8 +794,32 @@ export const createBotApp = ({
     return true;
   };
 
+  const consumeRequestLimit = (update, message, user = message.from, requestedAt) => {
+    const kind = classifyUpdateLane(update) === 'heavy' ? 'heavy' : 'command';
+    const limit = rateLimiter.consume({
+      chatId: message.chat.id,
+      userId: user?.id,
+      kind,
+      requestId: update.update_id,
+      requestedAt
+    });
+    if (!limit.allowed) metrics?.increment('bot_rate_limited_total', { kind });
+    return limit;
+  };
+
   const handleUpdateInner = async (update) => {
     const callback = update.callback_query;
+    if (callback?.data?.startsWith('kino:') && callback.message &&
+      chatAllowed(callback.message.chat?.id) && rateLimiter) {
+      const limit = consumeRequestLimit(update, callback.message, callback.from);
+      if (!limit.allowed) {
+        await api('answerCallbackQuery', {
+          callback_query_id: callback.id,
+          ...(limit.notify !== false ? { text: `Слишком часто. Подожди ${limit.retryAfterSeconds} сек.` } : {})
+        });
+        return;
+      }
+    }
     if (callback && await handleKinoCallback(callback)) return;
     if (update.poll_answer && court) {
       const result = await court.votePoll({ pollId: update.poll_answer.poll_id, voterId: update.poll_answer.user.id, optionIds: update.poll_answer.option_ids });
@@ -820,7 +843,25 @@ export const createBotApp = ({
     }
 
     await cacheMessage(message);
+    const command = parseCommand(message);
     const summaryDay = dailySummaryDay(message);
+    const heavy = classifyUpdateLane(update) === 'heavy';
+    if (!command && summaryDay === null) {
+      await analytics?.ingestMessage(message);
+      const guessText = await analytics?.checkCodewordGuess(message);
+      if (guessText) await sendMessage(message.chat.id, guessText, message.message_id);
+    }
+    if (rateLimiter && (command || summaryDay !== null || heavy)) {
+      const sentAt = update.edited_message ? message.edit_date : message.date;
+      const limit = consumeRequestLimit(update, message, message.from,
+        Number.isFinite(sentAt) ? sentAt * 1000 : undefined);
+      if (!limit.allowed) {
+        if (limit.notify !== false) {
+          await sendMessage(message.chat.id, `Слишком часто. Подожди ${limit.retryAfterSeconds} сек.`, message.message_id);
+        }
+        return;
+      }
+    }
     if (summaryDay === 'invalid') {
       await sendMessage(message.chat.id, 'Дата должна быть настоящей: `#итогидня 24.07.2026`.', message.message_id, { parse_mode: 'Markdown' });
       return;
@@ -836,8 +877,6 @@ export const createBotApp = ({
       await sendLongMessage(message.chat.id, text, message.message_id, { disable_web_page_preview: true });
       return;
     }
-    const command = parseCommand(message);
-
     if (command?.name === 'court' || command?.name === 'court_next') {
       const result = await court?.start(message.chat.id, (chatId, question, options) => api('sendPoll', { chat_id: chatId, question, options, is_anonymous: false }), { reroll: command.name === 'court_next', commandMessageId: message.message_id });
       if (result?.replaced?.message_id) await api('stopPoll', { chat_id: result.replaced.chat_id, message_id: result.replaced.message_id });
@@ -852,45 +891,8 @@ export const createBotApp = ({
     }
 
     if (!command) {
-      await analytics?.ingestMessage(message);
-      const guessText = await analytics?.checkCodewordGuess(message);
-      if (guessText) await sendMessage(message.chat.id, guessText, message.message_id);
-      if (classifyUpdateLane(update) === 'heavy' && rateLimiter) {
-        const limit = rateLimiter.consume({
-          chatId: message.chat.id,
-          userId: message.from?.id,
-          kind: 'heavy'
-        });
-        if (!limit.allowed) {
-          metrics?.increment('bot_rate_limited_total', { kind: 'heavy' });
-          await sendMessage(
-            message.chat.id,
-            `Слишком много тяжёлых запросов. Подожди ${limit.retryAfterSeconds} сек.`,
-            message.message_id
-          );
-          return;
-        }
-      }
       await handleMediaLinks(message);
       return;
-    }
-
-    if (rateLimiter) {
-      const kind = classifyUpdateLane(update) === 'heavy' ? 'heavy' : 'command';
-      const limit = rateLimiter.consume({
-        chatId: message.chat.id,
-        userId: message.from?.id,
-        kind
-      });
-      if (!limit.allowed) {
-        metrics?.increment('bot_rate_limited_total', { kind });
-        await sendMessage(
-          message.chat.id,
-          `Слишком часто. Подожди ${limit.retryAfterSeconds} сек.`,
-          message.message_id
-        );
-        return;
-      }
     }
 
     await analytics?.rememberParticipants?.(message);

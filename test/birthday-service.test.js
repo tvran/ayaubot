@@ -54,6 +54,20 @@ test('register stores a birthday and explains private reminders', async () => {
   assert.match(response, /нажать Start/);
 });
 
+test('year 0000 is rejected before database access and a missing year remains valid', async () => {
+  const stored = [];
+  const service = createBirthdayService({
+    db: { async upsertBirthday(value) { stored.push(value); } },
+    env: { BIRTHDAY_TIME_ZONE: 'UTC' },
+    now: () => new Date('2026-10-06T07:00:00Z')
+  });
+  assert.match(await service.register(message, '09.08.0000'), /Год должен быть от 1900 до 2026/);
+  assert.equal(stored.length, 0);
+  assert.throws(() => parseBirthdayDate('09.08.0000'), /Год должен быть/);
+  assert.match(await service.register(message, '09.08'), /Запомнил/);
+  assert.equal(stored[0].year, null);
+});
+
 test('scheduler sends one group congratulation and private reminders only once', async () => {
   const todayBirthday = {
     chat_id: '-1001',
