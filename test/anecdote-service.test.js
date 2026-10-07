@@ -23,6 +23,8 @@ test('generates an anecdote and reserves a daily slot', async () => {
   assert.equal(request.url, 'https://api.x.ai/v1/responses');
   assert.equal(request.body.model, 'grok-4.3');
   assert.match(request.body.instructions, /старпёрский советский юмор/);
+  assert.match(request.body.instructions, /Рандомайзер выбрал [1-9]/);
+  assert.match(request.body.instructions, /В остальных стилях не тащи всё в пошлость/);
   assert.match(request.body.input, /Сгенерируй один новый анекдот/);
 });
 
