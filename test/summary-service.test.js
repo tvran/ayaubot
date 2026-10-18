@@ -42,6 +42,7 @@ test('reads JSON output from the Responses API output content', async () => {
 
   const text = await service.summaryText(-100123, '2026-08-06');
 
+  assert.match(text, /альтернативные итоги/);
   assert.match(text, /Короткий итог/);
   assert.match(text, /@sanya/);
   assert.doesNotMatch(text, /t\.me\/c/);
@@ -49,7 +50,7 @@ test('reads JSON output from the Responses API output content', async () => {
   assert.equal(saved.chatId, -100123);
   assert.equal(request.url, 'https://api.x.ai/v1/responses');
   assert.equal(request.body.model, 'grok-4.3');
-  assert.match(request.body.input[0].content, /4–6 содержательных пунктов/);
+  assert.match(request.body.input[0].content, /очевидно выдуманные/);
   assert.match(request.body.input[0].content, /Мат разрешён/);
   assert.match(request.body.input[0].content, /строго одним форматом/);
   assert.match(request.body.input[1].content, /Саня \(@sanya\), он/);
